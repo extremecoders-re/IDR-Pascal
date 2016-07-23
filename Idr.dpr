@@ -6,7 +6,7 @@ uses
   ExceptionLog,
   Forms,
   Classes,
-  TypeInfo in 'TypeInfo.pas' {FTypeInfo},
+  TypeInfos in 'TypeInfos.pas' {FTypeInfo},
   StringInfo in 'StringInfo.pas' {FStringInfo},
   Main in 'Main.pas' {FMain},
   Explorer in 'Explorer.pas' {FExplorer},
@@ -35,7 +35,8 @@ uses
   Threads in 'Threads.pas',
   Infos in 'Infos.pas',
   Decompiler in 'Decompiler.pas',
-  Resources in 'Resources.pas';
+  Resources in 'Resources.pas',
+  KnowledgeBase in 'KnowledgeBase.pas';
 
 {$R *.RES}
 

@@ -20,8 +20,8 @@ Procedure AddFieldXref(fInfo:FIELDINFO; ProcAdr:Integer; ProcOfs:Integer; _type:
 procedure AddPicode(_Pos:Integer; Op:Byte; _Name:AnsiString; Ofs:Integer);
 Function ArgsCmpFunction(item1, item2:Pointer):Integer;
 Function CanReplace(var fromName, toName:AnsiString):Boolean;
-procedure ClearFlag(flag:Cardinal; p:Integer);
-procedure ClearFlags(flag:Cardinal; p, num:Integer);
+procedure ClearFlag(flag:TCflagSet; p:Integer);
+procedure ClearFlags(flag:TCflagSet; p, num:Integer);
 Procedure Copy2Clipboard(items:TStrings; leftMargin:Integer; asmCode:Boolean);
 Function ExportsCmpFunction(item1, item2:Pointer):Integer;
 Function ExtractClassName(const AName:AnsiString):AnsiString;
@@ -92,9 +92,9 @@ Procedure MakeGvar(recN:InfoRec; adr, xrefAdr:Integer);
 Function MakeGvarName(adr:Integer):AnsiString;
 Function MethodsCmpFunction(item1, item2:Pointer):Integer;
 procedure OutputDecompilerHeader(var f:TextFile);
-function IsFlagSet(flag:Cardinal; p:Integer): Boolean;
-procedure SetFlag(flag:Cardinal; p:Integer);
-procedure SetFlags(flag:Cardinal; p, num:Integer);
+function IsFlagSet(flag:TCflagSet; p:Integer): Boolean;
+procedure SetFlag(flag:TCflagSet; p:Integer);
+procedure SetFlags(flag:TCFlagSet; p, num:Integer);
 Function SortUnitsByAdr(item1, item2:Pointer):Integer;
 Function SortUnitsByNam(item1, item2:Pointer):Integer;
 Function SortUnitsByOrd(item1, item2:Pointer):Integer;
@@ -109,6 +109,8 @@ Function ManualInput(procAdr, curAdr:Integer; caption, labelText:AnsiString):Ans
 Procedure SaveCanvas(ACanvas:TCanvas);
 Procedure RestoreCanvas(ACanvas:TCanvas);
 Procedure DrawOneItem(AItem:AnsiString; ACanvas:TCanvas; var ARect:TRect; AColor:TColor; flags:Integer);
+
+Function OutputHex(v:Integer;sign:Boolean;dig:Integer=0):AnsiString;
 
 var
   StringBuf:Array [0..MAXSTRBUFFER] of Char;    //Buffer to make string
@@ -165,7 +167,7 @@ Function FirstWord(const str:AnsiString;from:Integer=1;Last:Integer=0):Integer;
 var
   k:Integer;
 Begin
-  Result:=1;
+  Result:=from;
   if Last<>0 then k:=Last else k:=Length(str);
   while (Result<=k)and not(str[Result] in [' ',#13,#10,#9]) Do Inc(Result);
   Dec(Result);
@@ -173,7 +175,7 @@ end;
 
 Function StrTok(const str:AnsiString;Delim:TChars):AnsiString;
 Const
-  s:string = '';
+  s:Ansistring = '';
   p:Integer = 1;
 var
   j,k:Integer;
@@ -193,7 +195,7 @@ end;
 Function MakeString(p:PAnsiChar;L:Integer):AnsiString;
 Begin
   SetLength(Result,L);
-  StrLCopy(PAnsiChar(Result),p,L);
+  if L<>0 then StrLCopy(PAnsiChar(Result),p,L);
 end;
 
 Function Adr2Pos (adr:Integer):Integer;
@@ -207,11 +209,11 @@ Begin
     segInfo := SegmentList[n];
     if (segInfo.Start <= adr) and (adr < segInfo.Start + segInfo.Size) then
     begin
-      if (segInfo.Flags and $80000)<>0 then Result:= -1
+      if (segInfo.Flags and IMAGE_SCN_MEM_PRELOAD)<>0 then Result:= -1
         Else Result:=ofs + (adr - segInfo.Start);
       Exit;
     End;
-    if (segInfo.Flags and $80000)=0 then Inc(ofs, segInfo.Size);
+    if (segInfo.Flags and IMAGE_SCN_MEM_PRELOAD)=0 then Inc(ofs, segInfo.Size);
   End;
   Result:= -2;
 end;
@@ -225,7 +227,7 @@ Begin
   for n := 0 to SegmentList.Count-1 do
   begin
     segInfo := SegmentList[n];
-    if (segInfo.Flags and $80000)=0 then
+    if (segInfo.Flags and IMAGE_SCN_MEM_PRELOAD)=0 then
     begin
       fromPos := toPos;
       Inc(toPos, segInfo.Size);
@@ -387,7 +389,8 @@ Begin
   if AName <>'' then
   begin
     p:= Pos('.',AName);
-    if p<>0 then Result:=Copy(AName,p+1, Length(AName));
+    if p<>0 then Result:=Copy(AName,p+1, Length(AName))
+      else Result:=AName;
   End;
 end;
 
@@ -421,10 +424,10 @@ Begin
   Result := fromPos-1;
   while true do
   begin
-    if IsFlagSet(cfInstruction, Result) then
+    if IsFlagSet([cfInstruction], Result) then
     begin
-      if IsFlagSet(cfProcStart, Result) then break;
-      if IsFlagSet(cfSetA, Result) then Exit;
+      if IsFlagSet([cfProcStart], Result) then break;
+      if IsFlagSet([cfSetA], Result) then Exit;
     End;
     Dec(Result);
   end;
@@ -436,28 +439,36 @@ Function GetNearestUpPrefixFs (fromPos:Integer):Integer;
 Var
   _disInfo:TDisInfo;
 Begin
-  If fromPos>=0 then
-    for Result:=fromPos - 1 Downto 0 do
+  if fromPos>=0 then
+  begin
+    Result:=fromPos - 1;
+    while Result>=0 Do
     begin
-      if IsFlagSet(cfInstruction, Result) then
+      if IsFlagSet([cfInstruction], Result) then
       begin
         frmDisasm.Disassemble(Pos2Adr(Result), @_disInfo, Nil);
         if _disInfo.SegPrefix = 4 Then Exit;
       End;
-      if IsFlagSet(cfProcStart, Result) then break;
+      if IsFlagSet([cfProcStart], Result) then break;
+      Dec(Result);
     End;
+  End;
   Result:= -1;
 end;
 
 //Return position of nearest up instruction from position fromPos
 Function GetNearestUpInstruction (fromPos:Integer):Integer; Overload;
 Begin
-  If fromPos >= 0 then
-    for Result:= fromPos - 1 Downto 0 do
+  if fromPos >= 0 Then
+  begin
+    Result:= fromPos - 1;
+    while Result>=0 do
     begin
-      if IsFlagSet(cfInstruction, Result) then Exit;
-      if IsFlagSet(cfProcStart, Result) then break;
+      if IsFlagSet([cfInstruction], Result) then Exit;
+      if IsFlagSet([cfProcStart], Result) then break;
+      Dec(Result);
     End;
+  end;
   result:=-1;
 end;
 
@@ -465,15 +476,19 @@ end;
 Function GetNthUpInstruction (fromPos, N:Integer):Integer;
 Begin
   if fromPos>=0 then
-    for Result:= fromPos - 1 downto 0 do
+  begin
+    Result:= fromPos - 1;
+    while Result>= 0 do
     begin
-      if IsFlagSet(cfInstruction, Result) then
+      if IsFlagSet([cfInstruction], Result) then
       begin
         Dec(N);
         if N=0 then Exit;
       End;
-      if IsFlagSet(cfProcStart, Result) then break;
+      if IsFlagSet([cfProcStart], Result) then break;
+      Dec(Result);
     End;
+  end;
   Result:= -1;
 end;
 
@@ -481,23 +496,33 @@ end;
 Function GetNearestUpInstruction (fromPos, toPos:Integer):Integer; Overload;
 Begin
   If fromPos>=0 then
-    for Result:= fromPos - 1 Downto toPos do
+  begin
+    Result:= fromPos - 1;
+    While Result>= toPos do
     begin
-      if IsFlagSet(cfInstruction, Result) then Exit;
-      if IsFlagSet(cfProcStart, Result) then break;
+      if IsFlagSet([cfInstruction], Result) then Exit;
+      if IsFlagSet([cfProcStart], Result) then break;
+      Dec(Result);
     End;
+  end;
   Result:=-1;
 end;
 
 Function GetNearestUpInstruction (fromPos, toPos, no:Integer):Integer; Overload;
 Begin
   If fromPos>=0 then
-    for Result:= fromPos - 1 Downto toPos do
-      if IsFlagSet(cfInstruction, Result) then
+  begin
+    Result:= fromPos - 1;
+    While Result>= toPos do
+    begin
+      if IsFlagSet([cfInstruction], Result) then
       begin
         Dec(no);
         if no=0 Then Exit;
       End;
+      Dec(Result);
+    end;
+  end;
   Result:=-1;
 end;
 
@@ -510,14 +535,16 @@ Begin
   If fromPos>=0 then
   begin
     len:=Length(Instruction);
-    for Result:= fromPos - 1 Downto toPos do
+    Result:= fromPos - 1;
+    while Result>= toPos do
     begin
-      if IsFlagSet(cfInstruction, Result) then
+      if IsFlagSet([cfInstruction], Result) then
       begin
         frmDisasm.Disassemble(Pos2Adr(Result), @_DisInfo, Nil);
         if (len<>0) and (_DisInfo.Mnem=Instruction) then Exit;
       end;
-      if IsFlagSet(cfProcStart, Result) then break;
+      if IsFlagSet([cfProcStart], Result) then break;
+      Dec(Result);
     End;
   End;
   Result:=-1;
@@ -533,15 +560,17 @@ Begin
   begin
     len1:=Length(Instruction1);
     len2:=Length(Instruction2);
-    for Result:= fromPos - 1 Downto toPos do
+    Result:= fromPos - 1;
+    while Result>= toPos do
     begin
-      if IsFlagSet(cfInstruction, Result) then
+      if IsFlagSet([cfInstruction], Result) then
       begin
         frmDisasm.Disassemble(Pos2Adr(Result), @_DisInfo, Nil);
         if ((len1<>0) and (_DisInfo.Mnem=Instruction1)) or
             ((len2<>0) and (_DisInfo.Mnem=Instruction2)) Then Exit;
       End;
-      if IsFlagSet(cfProcStart, result) then break;
+      if IsFlagSet([cfProcStart], result) then break;
+      Dec(Result);
     End;
   End;
   Result:=-1;
@@ -590,7 +619,7 @@ begin
     end;
 end;
 
-Function IsFlagSet (flag:Cardinal; p:Integer):Boolean;
+Function IsFlagSet (flag:TCflagSet; p:Integer):Boolean;
 Begin
   //!!!
   if (p < 0) or (p >= TotalSize) then
@@ -598,40 +627,40 @@ Begin
     dummy := 1;
     Result:=false;
   End
-  else Result:=(FlagList[p] and flag)<>0;
+  else Result:=(flag * FlagList[p] <> []);
 end;
 
-Procedure SetFlag (flag:Cardinal; p:Integer);
+Procedure SetFlag (flag:TCflagSet; p:Integer);
 Begin
   //!!!
   if (p < 0) or (p >= TotalSize) then dummy := 1
-    else if Assigned(FlagList) then FlagList[p]:=FlagList[p] or Integer(flag);
+    else if Assigned(FlagList) then FlagList[p]:=FlagList[p] + flag;
 end;
 
-Procedure SetFlags (flag:Cardinal; p, num:Integer);
+Procedure SetFlags (flag:TCFlagSet; p, num:Integer);
 var
   i:Integer;
 Begin
   //!!!
   if (p < 0) or (p + num >= TotalSize) then dummy := 1
   Else if Assigned(FlagList) then for i := P to p + num-1 do
-    FlagList[i]:=FlagList[i] or Integer(flag);
+    FlagList[i]:=FlagList[i] + flag;
 end;
 
-Procedure ClearFlag (flag:Cardinal; p:Integer);
+Procedure ClearFlag (flag:TCflagSet; p:Integer);
 Begin
   //!!!
   if (p < 0) or (p >= TotalSize) then dummy := 1
-    else if Assigned(FlagList) then FlagList[p]:=FlagList[p] and not flag;
+    else if Assigned(FlagList) then FlagList[p]:=FlagList[p] - flag;
 end;
 
-Procedure ClearFlags (flag:Cardinal; p, num:Integer);
+Procedure ClearFlags (flag:TCflagSet; p, num:Integer);
 var
   i:Integer;
 Begin
   if (p < 0) or (p + num > TotalSize) Then dummy := 1
   else if Assigned(FlagList) then for i := p to p + num-1 do
-    FlagList[i]:=FlagList[i] and not flag;
+    FlagList[i]:=FlagList[i] - flag;
 end;
 
 //pInfo must contain pInfo->
@@ -720,7 +749,7 @@ Begin
   if idx <> -1 then
   begin
     idx := KBase.TypeOffsets[idx].NamId;
-    if KBase.GetTypeInfo(idx, INFO_DUMP, tInfo) then
+    if KBase.GetTypeInfo(idx, [INFO_DUMP], tInfo) then
     begin
       Result:=tInfo.Size;
       Exit;
@@ -793,7 +822,7 @@ Begin
   if _idx <> -1 then
   begin
     _idx := KBase.TypeOffsets[_idx].NamId;
-    if KBase.GetTypeInfo(_idx, INFO_FIELDS, tInfo) then
+    if KBase.GetTypeInfo(_idx, [INFO_FIELDS], tInfo) then
     begin
       if tInfo.FieldsNum<>0 then
       begin
@@ -1009,7 +1038,7 @@ Begin
   vmtAdr := Adr - VmtSelfPtr;
   p := Adr2Pos(vmtAdr) + VmtParent;
   adres := PInteger(Code + p)^;
-  if IsValidImageAdr(adres) and IsFlagSet(cfImport, Adr2Pos(adres)) then Exit;
+  if IsValidImageAdr(adres) and IsFlagSet([cfImport], Adr2Pos(adres)) then Exit;
   if (DelphiVersion = 2) And (adres<>0) then Inc(adres, VmtSelfPtr);
   Result:=adres;
 end;
@@ -1055,7 +1084,7 @@ Begin
   if not IsValidImageAdr(adr) then Exit;
   vmtAdr := adr - VmtSelfPtr;
   p := Adr2Pos(vmtAdr) + VmtClassName;
-  if IsFlagSet(cfImport, p) then
+  if IsFlagSet([cfImport], p) then
   begin
     recN := GetInfoRec(vmtAdr + VmtClassName);
     Result:=recN.Name;
@@ -1262,13 +1291,13 @@ Begin
     Result:='?';
     Exit;
   end;
-  if IsFlagSet(cfImport, Adr2Pos(adr)) then
+  if IsFlagSet([cfImport], Adr2Pos(adr)) then
   begin
     Result:=GetInfoRec(adr).Name;
     Exit;
   End;
   p := Adr2Pos(adr);
-  if IsFlagSet(cfRTTI, p) then Inc(p,4);
+  if IsFlagSet([cfRTTI], p) then Inc(p,4);
   //TypeKind
   kind := LKind(Code[p]);
   Inc(p);
@@ -1349,7 +1378,7 @@ Begin
   if idx <>-1 then
   begin
     idx := KBase.TypeOffsets[idx].NamId;
-    if KBase.GetTypeInfo(idx, INFO_DUMP, tInfo) then
+    if KBase.GetTypeInfo(idx, [INFO_DUMP], tInfo) then
     begin
       if tInfo.Size<>0 then
       Begin
@@ -1416,7 +1445,7 @@ Begin
   if idx <>-1 then
   begin
     idx := KBase.TypeOffsets[idx].NamId;
-    if KBase.GetTypeInfo(idx, INFO_DUMP, tInfo) then
+    if KBase.GetTypeInfo(idx, [INFO_DUMP], tInfo) then
     begin
       if (tInfo.Decl <> '') and (tInfo.Decl[1] = '^') then
       begin
@@ -1590,7 +1619,7 @@ Begin
     if idx <>-1 then
     begin
       idx := KBase.TypeOffsets[idx].NamId;
-      if KBase.GetTypeInfo(idx, INFO_DUMP, tInfo) then
+      if KBase.GetTypeInfo(idx, [INFO_DUMP], tInfo) then
       begin
         if tInfo.Kind = Ord('Z') then  //drAlias???
         Begin
@@ -1818,7 +1847,7 @@ Begin
     if idx <> -1 then
     begin
       idx := KBase.TypeOffsets[idx].NamId;
-      if KBase.GetTypeInfo(idx, INFO_FIELDS or INFO_PROPS or INFO_METHODS or INFO_DUMP, tInfo) then
+      if KBase.GetTypeInfo(idx, [INFO_FIELDS, INFO_PROPS, INFO_METHODS, INFO_DUMP], tInfo) then
       begin
         if tInfo.Kind = drRangeDef Then
         begin
@@ -1865,7 +1894,7 @@ Begin
   if idx <> -1 then
   begin
     idx := KBase.TypeOffsets[idx].NamId;
-    if KBase.GetTypeInfo(idx, INFO_DUMP, tInfo) then
+    if KBase.GetTypeInfo(idx, [INFO_DUMP], tInfo) then
       if Pos('set of ',tInfo.Decl)<>0 then
       begin
         size := tInfo.Size;
@@ -1876,7 +1905,7 @@ Begin
         if idx <> -1 then
         begin
           idx := KBase.TypeOffsets[idx].NamId;
-          if KBase.GetTypeInfo(idx, INFO_DUMP, tInfo) then
+          if KBase.GetTypeInfo(idx, [INFO_DUMP], tInfo) then
           begin
             pVal := ValAdr;
             p := strtok(tInfo.Decl, [',','(',')']);
@@ -2057,7 +2086,7 @@ var
   adr,p:Integer;
 Begin
   adr := GetOwnTypeAdr(arrType);
-  if IsValidImageAdr(adr) and IsFlagSet(cfRTTI, Adr2Pos(adr)) then
+  if IsValidImageAdr(adr) and IsFlagSet([cfRTTI], Adr2Pos(adr)) then
   begin
     Result:=GetDynArrayTypeName(adr);
     Exit;
@@ -2246,6 +2275,8 @@ begin
 end;
 
 Procedure Copy2Clipboard (items:TStrings; leftMargin:Integer; asmCode:Boolean);
+Const
+  CRLF:AnsiString = #13+#10;
 Var
   n,BufLen:Integer;
   line:AnsiString;
@@ -2266,8 +2297,9 @@ Begin
       //Запихиваем все данные в буфер
       for n := 0 to items.Count-1 do
       begin
-        line := Copy(items[n],leftMargin+1,1024)+#13+#10;
-        buf.Write(line[1],Length(line));
+        line := Copy(items[n],leftMargin+1,2000);
+        buf.Write(line[1],Length(line)-Ord(asmCode));
+        buf.Write(CRLF[1],2);
       End;
       n:=0;
       buf.Write(n,1);
@@ -2319,7 +2351,7 @@ var
   i:Integer;
 Begin
   i := IdxToIdx32Tab[Idx];
-  Result:= (i = 16) or (i = 17) or (i = 18);
+  Result:= i in [16..18];
 end;
 
 Function IsAnalyzedAdr(Adr:Integer):Boolean;
@@ -2333,7 +2365,7 @@ begin
     segInfo := SegmentList[n];
     if (segInfo.Start <= Adr) and (Adr < segInfo.Start + segInfo.Size) then
     begin
-      if (segInfo.Flags and $80000)=0 then REsult:=true;
+      if (segInfo.Flags and IMAGE_SCN_MEM_PRELOAD)=0 then Result:=true;
       break;
     End;
   End;
@@ -2344,7 +2376,7 @@ Begin
   Result := Adr2Pos(fromAdr);
   while True do
   begin
-    if IsFlagSet(cfLoc, Result) Then Exit;
+    if IsFlagSet([cfLoc], Result) Then Exit;
     Dec(Result);
   End;
 end;
@@ -2438,6 +2470,28 @@ Begin
   ACanvas.Font.Color := AColor;
   ACanvas.TextOut(ARect.Left, ARect.Top, AItem);
   RestoreCanvas(ACanvas);
+end;
+
+Function OutputHex(v:Integer;sign:Boolean;dig:Integer=0):AnsiString;
+begin
+  if sign then
+  begin
+    if (v>=-9) and (v<=9) then
+    begin
+      if v<0 then Result:=IntToStr(v)
+        else Result:='+'+IntToStr(v);
+    end
+    else
+    begin
+      if v<0 then Result:='-$'+IntToHex(-v,dig)
+        else Result:='+$'+IntToHex(v,dig);
+    end;
+  end
+  else
+  begin
+    if v in [0..9] then Result:=IntToStr(v)
+      else Result:='$'+IntToHex(v,dig);
+  end;
 end;
 
 Initialization

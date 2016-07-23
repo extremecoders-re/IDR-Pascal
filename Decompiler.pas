@@ -116,12 +116,12 @@ Type
     Destructor Destroy; Override;
     Function CheckPrototype(ARec:InfoRec):Boolean;
     Procedure ClearStop(Adr:Integer);
-    Function Decompile(fromAdr, flags:Integer; loopInfo:TLoopInfo):Integer;
+    function Decompile(fromAdr:Integer; flags:TDecomCset; loopInfo:TLoopInfo): Integer;
     function DecompileCaseEnum(fromAdr:Integer; Q:Integer; loopInfo:TLoopInfo): Integer;
     function DecompileGeneralCase(fromAdr, markAdr:Integer; loopInfo:TLoopInfo; Q:Integer): Integer;
-    Function DecompileTry(fromAdr, flags:Integer; loopInfo:TLoopInfo):Integer;
+    Function DecompileTry(fromAdr:Integer; flags:TDecomCset; loopInfo:TLoopInfo):Integer;
     Function FGet(idx:Integer):PItem;
-    Procedure FPop;
+    function FPop: PITEM;
     Procedure FPush(val:PITEM);
     Procedure FSet(idx:Integer; val:PITEM);
     Function GetArrayFieldOffset(ATypeName:AnsiString; AFromOfs, AScale:Integer):FieldInfo;
@@ -173,7 +173,7 @@ Begin
   Result:=item.Value;
   if Result = '' then
   begin
-    if (item.Flags and IF_INTVAL)<>0 then
+    if IF_INTVAL in item.Flags then
       Result:= GetImmString(item._Type, item.IntValue)
     Else if item.Name <> '' then Result := item.Name;
   end
@@ -221,7 +221,7 @@ Procedure InitItem(item:PItem);
 Begin
   with item^ Do
   Begin
-    Flags:=0;
+    Flags:=[];
     Precedence:=PRECEDENCE_ATOM;
     Size:=0;
     Offset:=0;
@@ -327,7 +327,7 @@ Begin
   BJLseq := TList.Create;
   bjllist := TList.Create;
   CmpStack := TList.Create;
-  Embedded := (recN.procInfo.flags and PF_EMBED)<>0;
+  Embedded := PF_EMBED in recN.procInfo.flags;
   //EmbeddedList := TStringList.Create;
 end;
 
@@ -425,12 +425,12 @@ Begin
   _ap := Adr2Pos(Env.StartAdr);
   for n := _ap to _ap + Env.Size do
   begin
-    if IsFlagSet(cfLoc, n) then
+    if IsFlagSet([cfLoc], n) then
     begin
       recN := GetInfoRec(Pos2Adr(n));
       if Assigned(recN) then recN.counter := 0;
     end;
-    ClearFlag(cfPass, n);
+    ClearFlag([cfPass], n);
   end;
 end;
 
@@ -573,8 +573,9 @@ Begin
   FSet(0, val);
 end;
 
-Procedure TDecompiler.FPop;
+Function TDecompiler.FPop:PITEM;
 Begin
+  Result:=FGet(0);
   _TOP_:=(_TOP_+1) and 7;
 end;
 
@@ -592,7 +593,7 @@ Begin
     if aInfo.TypeDef = '' then Exit;
   end;
   if (ARec.kind = ikFunc) and (ARec._type = '') Then Exit;
-  Result:=False;
+  Result:=True;
 end;
 
 Function TDecompiler.Init (fromAdr:Integer):Boolean;
@@ -611,7 +612,7 @@ Begin
   fromPos := Adr2Pos(fromAdr); 
   assert(fromPos >= 0);
   //Imports not decompile
-  if IsFlagSet(cfImport, fromPos) then Exit;
+  if IsFlagSet([cfImport], fromPos) then Exit;
   recN := GetInfoRec(fromAdr);
   if not CheckPrototype(recN) then
   begin
@@ -632,7 +633,7 @@ Begin
   _TOP_ := 0;
   for n := 0 to 7 do
     FSet(n, @item);
-  callKind := recN.procInfo.flags and 7;
+  callKind := recN.procInfo.call_kind;
 
   //Arguments
   if Assigned(recN.procInfo.args) then argNum := recN.procInfo.args.Count
@@ -644,8 +645,8 @@ Begin
     Begin
       aInfo := PARGINFO(recN.procInfo.args[n]);
       InitItem(@item);
-      item.Flags := IF_ARG;
-      if aInfo.Tag = $22 then item.Flags := item.Flags or IF_VAR;
+      item.Flags := [IF_ARG];
+      if aInfo.Tag = $22 then Include(item.Flags, IF_VAR);
       item._Type := aInfo.TypeDef;
       item.Name := GetArgName(aInfo);
       item.Value := item.Name;
@@ -673,7 +674,7 @@ Begin
     if (retKind = ikLString) or (retKind = ikRecord) then
     Begin
       InitItem(@item);
-      item.Flags := IF_ARG or IF_VAR;
+      item.Flags := [IF_ARG, IF_VAR];
       item._Type := retType;
       item.Name := 'Result';
       item.Value := item.Name;
@@ -695,8 +696,8 @@ Begin
     Begin
       aInfo := PARGINFO(recN.procInfo.args[n]);
       InitItem(@item);
-      item.Flags := IF_ARG;
-      if aInfo.Tag = $22 then item.Flags := item.Flags or IF_VAR;
+      item.Flags := [IF_ARG];
+      if aInfo.Tag = $22 then Include(item.Flags, IF_VAR);
       item._Type := aInfo.TypeDef;
       item.Name := GetArgName(aInfo);
       item.Value := item.Name;
@@ -708,8 +709,8 @@ Begin
     Begin
       aInfo := PARGINFO(recN.procInfo.args[n]);
       InitItem(@item);
-      item.Flags := IF_ARG;
-      if aInfo.Tag = $22 then item.Flags := item.Flags or IF_VAR;
+      item.Flags := [IF_ARG];
+      if aInfo.Tag = $22 then Include(item.Flags, IF_VAR);
       item._Type := aInfo.TypeDef;
       item.Name := GetArgName(aInfo);
       item.Value := item.Name;
@@ -718,7 +719,7 @@ Begin
   //Push ret address
   InitItem(@item);
   Push(@item);
-  Env.BpBased := (recN.procInfo.flags and PF_BPBASED)<>0;
+  Env.BpBased := PF_BPBASED in recN.procInfo.flags;
   Env.LocBase := 0;
   if not Env.BpBased then Env.LocBase := _ESP_;
   Env.LastResString := '';
@@ -801,12 +802,12 @@ Begin
     if StartAdr <> EP then
     begin
       if recN.kind = ikConstructor then
-        De.Decompile(StartAdr, CF_CONSTRUCTOR, Nil)
+        De.Decompile(StartAdr, [CF_CONSTRUCTOR], Nil)
       else if recN.kind = ikDestructor then
-        De.Decompile(StartAdr, CF_DESTRUCTOR, Nil)
-      else De.Decompile(StartAdr, 0, Nil);
+        De.Decompile(StartAdr, [CF_DESTRUCTOR], Nil)
+      else De.Decompile(StartAdr, [], Nil);
     end
-    else De.Decompile(StartAdr, 0, Nil);
+    else De.Decompile(StartAdr, [], Nil);
     AddToBody('end');
   Finally
     De.Free;
@@ -833,7 +834,7 @@ Begin
     Inc(_curAdr, _instrLen);
     if disInfo.Branch then
     begin
-      if IsFlagSet(cfSkip, _curPos - _instrLen) then continue;
+      if IsFlagSet([cfSkip], _curPos - _instrLen) then continue;
       if not disInfo.Conditional then Exit;
       brType := BranchGetPrevInstructionType(disInfo.Immediate, _jmpAdr, loopInfo);
       Case brType of
@@ -914,7 +915,7 @@ Begin
       BJLseq.Add(bjlInfo_0);
       break;
     End;
-    if IsFlagSet(cfLoc, curPos) then
+    if IsFlagSet([cfLoc], curPos) then
     Begin
       New(bjl_0);
       bjl_0.branch := false;
@@ -937,7 +938,7 @@ Begin
       New(bjl_0);
       bjl_0.branch := true;
       bjl_0.loc := false;
-      if IsFlagSet(cfSkip, curPos) then bjl_0._type := BJL_SKIP_BRANCH
+      if IsFlagSet([cfSkip], curPos) then bjl_0._type := BJL_SKIP_BRANCH
         else bjl_0._type := BJL_BRANCH;
       bjl_0.address := disInfo.Immediate;
       bjl_0.idx := 0;
@@ -1399,7 +1400,7 @@ Begin
   result := AnsiReplaceStr(result, '&&', 'And');
 end;
 
-Function TDecompiler.Decompile (fromAdr, flags:Integer; loopInfo:TLoopInfo):Integer;
+Function TDecompiler.Decompile (fromAdr:Integer; flags:TDecomCset; loopInfo:TLoopInfo):Integer;
 var
   cmp, immInt64,fullSim:Boolean;
   op:Byte;
@@ -1422,7 +1423,7 @@ Begin
   fromPos := Adr2Pos(fromAdr);
 
   line := '//' + Val2Str(fromAdr,8);
-  if IsFlagSet(cfPass, fromPos) then
+  if IsFlagSet([cfPass], fromPos) then
   Begin
     line:=line + '??? And ???';
     //return fromAdr;
@@ -1436,14 +1437,14 @@ Begin
     //End of decompilation
     if DeFlags[curAdr - Env.StartAdr] = 1 then
     Begin
-      SetFlag(cfPass, fromPos);
+      SetFlag([cfPass], fromPos);
       break;
     End;
     //@TryFinallyExit
-    if IsFlagSet(cfFinallyExit, curPos) then
+    if IsFlagSet([cfFinallyExit], curPos) then
     Begin
       Env.AddToBody('Exit;');
-      while IsFlagSet(cfFinallyExit, curPos) do
+      while IsFlagSet([cfFinallyExit], curPos) do
       Begin
         Inc(curPos);
         Inc(curAdr);
@@ -1451,7 +1452,7 @@ Begin
       continue;
     End;
     //Try
-    if IsFlagSet(cfTry, curPos) then
+    if IsFlagSet([cfTry], curPos) then
     Begin
       try
         curAdr := DecompileTry(curAdr, flags, loopInfo);
@@ -1461,10 +1462,10 @@ Begin
       curPos := Adr2Pos(curAdr);
       continue;
     End;
-    if IsFlagSet(cfLoop, curPos) then
+    if IsFlagSet([cfLoop], curPos) then
     Begin
       recN := GetInfoRec(curAdr);
-      if IsFlagSet(cfFrame, curPos) then
+      if IsFlagSet([cfFrame], curPos) then
       Begin
         if Assigned(recN) and (recN.xrefs.Count = 1) then
         Begin
@@ -1529,7 +1530,7 @@ Begin
               End;
               //reg := 0 after cycle
               InitItem(@item);
-              item.Flags := item.Flags or IF_INTVAL;
+              Include(item.Flags, IF_INTVAL);
               SetRegItem(regIdx, item);
               curPos := sPos;
               curAdr := sAdr;
@@ -1591,7 +1592,7 @@ Begin
             de.SetStop(_loopInfo.forInfo.StopAdr);
             try
               Env.AddToBody('begin');
-              curAdr := de.Decompile(curAdr, 0, _loopInfo);
+              curAdr := de.Decompile(curAdr, [], _loopInfo);
               Env.AddToBody('end');
             except
               on E:Exception do
@@ -1625,7 +1626,7 @@ Begin
                 Env.AddToBody('while () do');
                 Env.AddToBody('begin');
               End;
-              curAdr := de.Decompile(curAdr, 0, _loopInfo);
+              curAdr := de.Decompile(curAdr, [], _loopInfo);
               if _loopInfo.Kind = 'R' then Env.AddToBody('until')
                 else Env.AddToBody('end');
             except
@@ -1662,7 +1663,7 @@ Begin
       Inc(curAdr);
       continue;
     End;
-    if IsFlagSet(cfDSkip, curPos) then
+    if IsFlagSet([cfDSkip], curPos) then
     Begin
       Inc(curPos, instrLen); 
       Inc(curAdr, instrLen);
@@ -1678,19 +1679,19 @@ Begin
     End;
     op := frmDisasm.GetOp(DisaInfo.Mnem);
     //cfSkip - skip instructions
-    if IsFlagSet(cfSkip, curPos) then
+    if IsFlagSet([cfSkip], curPos) then
     Begin
       //Constructor or Destructor
-      if ((op = OP_TEST) or (op = OP_CMP) or DisaInfo.Call) and ((flags and (CF_CONSTRUCTOR or CF_DESTRUCTOR))<>0) then
+      if ((op in [OP_TEST, OP_CMP]) or DisaInfo.Call) and (flags * [CF_CONSTRUCTOR, CF_DESTRUCTOR] <> []) then
       Begin
         while true do
         Begin
           //If instruction test or cmp - skip until loc (instruction at loc position need to be executed)
-          if ((op = OP_TEST) or (op = OP_CMP)) and IsFlagSet(cfLoc, curPos) then break;
+          if ((op = OP_TEST) or (op = OP_CMP)) and IsFlagSet([cfLoc], curPos) then break;
           Inc(curPos, instrLen); 
           Inc(curAdr, instrLen);
           //Skip @BeforeDestruction
-          if DisaInfo.Call and not IsFlagSet(cfSkip, curPos) then break;
+          if DisaInfo.Call and not IsFlagSet([cfSkip], curPos) then break;
           instrLen := frmDisasm.Disassemble(Code + curPos, curAdr, Nil, Nil);
           if instrLen=0 then
           Begin
@@ -1702,7 +1703,7 @@ Begin
         End;
         continue;
       End;
-      if (flags and (CF_FINALLY or CF_EXCEPT))<>0 then
+      if flags * [CF_FINALLY, CF_EXCEPT] <> [] then
       Begin
         Inc(curPos, instrLen); 
         Inc(curAdr, instrLen);
@@ -1710,7 +1711,7 @@ Begin
       End;
       if DisaInfo.Call then
       Begin
-        if (flags and cfExcept)<>0 then
+        if CF_EXCEPT in flags then
         Begin
           recN := GetInfoRec(DisaInfo.Immediate);
           if recN.SameName('@DoneExcept') then
@@ -1746,7 +1747,7 @@ Begin
       else
       Begin
         //Case without cmp
-        if IsFlagSet(cfSwitch, curPos) then
+        if IsFlagSet([cfSwitch], curPos) then
         Begin
           GetRegItem(DisaInfo.OpRegIdx[0], item);
           if item.Value <> '' then
@@ -1769,7 +1770,7 @@ Begin
               recX := PXrefRec(recN.xrefs[n]);
               if (recX.adr + recX.offset = curAdr) and (recX._type = 'J') then
               Begin
-                SetFlag(cfLoop or cfLoc, curPos);
+                SetFlag([cfLoop, cfLoc], curPos);
                 recN1 := GetInfoRec(curAdr);
                 if recN1=Nil then recN1 := InfoRec.Create(curPos, ikUnknown);
                 continue;
@@ -1781,7 +1782,9 @@ Begin
         if DeFlags[DisaInfo.Immediate - Env.StartAdr] = 1 then
         Begin
           //SetFlag(cfPass, _fromPos);
-          Inc(curPos, instrLen); 
+          //check Exit
+          if IsExit(DisaInfo.Immediate) then Env.AddToBody('Exit;');
+          Inc(curPos, instrLen);
           Inc(curAdr, instrLen);
           break;
         End;
@@ -1804,7 +1807,7 @@ Begin
       if Assigned(recN) then
       Begin
         //Inherited
-        if ((flags and (CF_CONSTRUCTOR or CF_DESTRUCTOR))<>0) and IsValidCodeAdr(DisaInfo.Immediate) then
+        if (flags * [CF_CONSTRUCTOR, CF_DESTRUCTOR] <> []) and IsValidCodeAdr(DisaInfo.Immediate) then
         Begin
           GetRegItem(16, item);
           if SameText(item.Value, 'Self') then  //eax:=Self
@@ -1845,7 +1848,7 @@ Begin
         cmpRes := GetCmpInfo(curAdr);
         CompInfo.O := CmpOp;
         if cmpRes = CMP_FAILED then continue;
-        if (flags and CF_BJL)<>0 then
+        if CF_BJL in flags then
         Begin
           New(cmpItem);
           cmpItem.L := CompInfo.L;
@@ -1854,13 +1857,22 @@ Begin
           Env.CmpStack.Add(cmpItem);
           //skip jcc
           instrLen := frmDisasm.Disassemble(Code + curPos, curAdr, Nil, Nil);
-          Inc(curPos, instrLen); 
+          Inc(curPos, instrLen);
           Inc(curAdr, instrLen);
           continue; //???
         End;
         if cmpRes = CMP_BRANCH then
         Begin
           instrLen := frmDisasm.Disassemble(Code + curPos, curAdr, @disInfo, Nil);
+          //Exit
+          if IsExit(disInfo.Immediate) then
+          begin
+            line := 'if (' + CompInfo.L + ' ' + GetDirectCondition(CompInfo.O) + ' ' + CompInfo.R + ') then Exit;';
+            Env.AddToBody(line);
+            Inc(curPos, instrLen);
+            Inc(curAdr, instrLen);
+            continue;
+          end;
           //jcc up
           if disInfo.Immediate < curAdr then
           Begin
@@ -1906,7 +1918,7 @@ Begin
       if (procSize<>0) and (curPos - fromPos < procSize) then
         Env.AddToBody('Exit;');
       WasRet := true;
-      SetFlag(cfPass, Adr2Pos(fromAdr));
+      SetFlag([cfPass], Adr2Pos(fromAdr));
       break;
       //continue;
     End;
@@ -1969,7 +1981,7 @@ Begin
           curAdr := sAdr + bytesToSkip2;
         End;
         if cmpRes = CMP_FAILED then continue;
-        if (flags and CF_BJL)<>0 then
+        if CF_BJL in flags then
         Begin
           New(cmpItem);
           cmpItem.L := CompInfo.L;
@@ -2029,7 +2041,7 @@ Begin
         Inc(curAdr, bytesToSkip);
         continue;
       End;
-      if IsFlagSet(cfSwitch, curPos) then
+      if IsFlagSet([cfSwitch], curPos) then
       Begin
         GetRegItem(DisaInfo.OpRegIdx[0], item);
         if item.Value <> '' then
@@ -2081,7 +2093,7 @@ Begin
           cmpRes := GetCmpInfo(curAdr);
           SimulateInstr2(sAdr, op);
           if cmpRes = CMP_FAILED then continue;
-          if (flags and CF_BJL)<>0 then
+          if CF_BJL in flags then
           Begin
             New(cmpItem);
             cmpItem.L := CompInfo.L;
@@ -2131,7 +2143,7 @@ Begin
             curPos := sPos + bytesToSkip3;
             curAdr := sAdr + bytesToSkip3;
           End;
-          if (flags and CF_BJL)<>0 then
+          if CF_BJL in flags then
           Begin
             New(cmpItem);
             cmpItem.L := CompInfo.L;
@@ -2159,7 +2171,7 @@ Begin
         End;
         cmpRes := GetCmpInfo(curAdr);
         //SimulateFloatInstruction(_sAdr, _instrLen);
-        if (flags and CF_BJL)<>0 then
+        if CF_BJL in flags then
         Begin
           SimulateFloatInstruction(sAdr, instrLen);
           New(cmpItem);
@@ -2262,7 +2274,7 @@ Begin
       Inc(curPos, instrLen); 
       Inc(curAdr, instrLen);
       if cmpRes = CMP_FAILED then continue;
-      if (flags and CF_BJL)<>0 then
+      if CF_BJL in flags then
       Begin
         New(cmpItem);
         cmpItem.L := CompInfo.L;
@@ -2347,7 +2359,7 @@ Begin
         continue;
       End;
       //Next switch
-      if IsFlagSet(cfSwitch, curPos + instrLen) then
+      if IsFlagSet([cfSwitch], curPos + instrLen) then
       Begin
         n := - DisaInfo.Immediate;
         Inc(curPos, instrLen); 
@@ -2388,7 +2400,7 @@ Begin
         continue;
       End;
       //Next switch
-      if IsFlagSet(cfSwitch, curPos + instrLen) then
+      if IsFlagSet([cfSwitch], curPos + instrLen) then
       Begin
         n := DisaInfo.Immediate;
         Inc(curPos, instrLen); 
@@ -2415,7 +2427,7 @@ Begin
         continue;
       End;
       if cmpRes = CMP_FAILED then continue;
-      if (flags and CF_BJL)<>0 then
+      if CF_BJL in flags then
       Begin
         New(cmpItem);
         cmpItem.L := CompInfo.L;
@@ -2470,7 +2482,7 @@ Begin
       Inc(curPos, instrLen); 
       Inc(curAdr, instrLen);
       if cmpRes = CMP_FAILED then continue;
-      if (flags and CF_BJL)<>0 then
+      if CF_BJL in flags then
       Begin
         New(cmpItem);
         cmpItem.L := CompInfo.L;
@@ -2510,7 +2522,7 @@ Begin
       Inc(curPos, instrLen); 
       Inc(curAdr, instrLen);
       if cmpRes = CMP_FAILED then continue;
-      if (flags and CF_BJL)<>0 then
+      if CF_BJL in flags then
       Begin
         New(cmpItem);
         cmpItem.L := CompInfo.L;
@@ -2624,7 +2636,7 @@ Begin
       Inc(curPos, instrLen); 
       Inc(curAdr, instrLen);
       if cmpRes = CMP_FAILED then continue;
-      if (flags and CF_BJL)<>0 then
+      if CF_BJL in flags then
       Begin
         New(cmpItem);
         cmpItem.L := CompInfo.L;
@@ -2690,7 +2702,7 @@ Begin
       bytesToSkip := IsAbs(curAdr);
       if bytesToSkip<>0 then
       Begin
-        item.Flags := IF_CALL_RESULT;
+        item.Flags := [IF_CALL_RESULT];
         item.Precedence := PRECEDENCE_ATOM;
         item.Value := 'Abs(' + item.Value + ')';
         item._Type := 'Integer';
@@ -2709,7 +2721,7 @@ Begin
       GetRegItem(23, item1);//edi
       GetRegItem(22, item2);//esi
       //.lvar
-      if (item1.Flags and IF_STACK_PTR)<>0 then
+      if IF_STACK_PTR in item1.Flags then
       Begin
         if item1._Type <> '' then
           typeName := item1._Type
@@ -2727,7 +2739,7 @@ Begin
               raise Exception.Create('Possibly incorrect RecordSize (or incorrect type of record)');
             End;
             item := Env.Stack[item1.IntValue + r];
-            item.Flags := IF_FIELD;
+            item.Flags := [IF_FIELD];
             item.Offset := r;
             item._Type := '';
             if r = 0 then item._Type := typeName;
@@ -2762,7 +2774,7 @@ Begin
         continue;
       End;
       //lvar.
-      if (item2.Flags and IF_STACK_PTR)<>0 then
+      if IF_STACK_PTR in item2.Flags then
       Begin
         if item2._Type <> '' then
           typeName := item2._Type
@@ -2780,7 +2792,7 @@ Begin
               raise Exception.Create('Possibly incorrect RecordSize (or incorrect type of record)');
             End;
             item := Env.Stack[item2.IntValue + r];
-            item.Flags := IF_FIELD;
+            item.Flags := [IF_FIELD];
             item.Offset := r;
             item._Type := '';
             if r = 0 then item._Type := typeName;
@@ -2861,7 +2873,8 @@ var
   recN, recN1:InfoRec;
   pCode:PPICODE;
   de:TDecompiler;
-  _name, alias, line, retType, _value, iname, embAdr, _typeName, comment, regName:AnsiString;
+  _name, alias, line, retType, _value, iname, embAdr:AnsiString;
+  _typeName, comment, regName,propName:AnsiString;
 Begin
   idx:=-1;
   pp := Nil;
@@ -2873,13 +2886,17 @@ Begin
   if IsValidCodeAdr(callAdr) then
   Begin
     recN := GetInfoRec(callAdr);
-    if recN.SameName('@AbstractError') then
+    _name:=recN.Name;
+    //Is it property function (Set, Get, Stored)?
+    if Pos('.',_name)<>0 then
+      propName := KBase.IsPropFunction(ExtractClassName(_name), ExtractProcName(_name));
+    if SameText(_name,'@AbstractError') then
     Begin
       Env.ErrAdr := curAdr;
       raise Exception.Create('Pure Virtual Call');
     End;
     //Import can have no prototype
-    if IsFlagSet(cfImport, Adr2Pos(callAdr)) then
+    if IsFlagSet([cfImport], Adr2Pos(callAdr)) then
     Begin
       if not CheckPrototype(recN) then
       Begin
@@ -2897,7 +2914,7 @@ Begin
       End;
     End;
     //@DispInvoke
-    if recN.SameName('@DispInvoke') then
+    if SameText(_name,'@DispInvoke') then
     Begin
       Env.AddToBody('DispInvoke(...);');
       _value := ManualInput(CurProcAdr, curAdr, 'Input the number of RET bytes (in hex) of procedure at ' + Val2Str(curAdr,8), 'Bytes:');
@@ -2914,7 +2931,7 @@ Begin
     if mtd=Nil then
     Begin
       _name := recN.Name;
-      callKind := recN.procInfo.flags and 7;
+      callKind := recN.procInfo.call_kind;
       methodKind := recN.kind;
       if Assigned(recN.procInfo.args) then argsNum := recN.procInfo.args.Count
         else argsNum:=0;
@@ -2974,7 +2991,7 @@ Begin
     else
     Begin
       _name := mtd.name;
-      if KBase.GetProcInfo(PAnsiChar(mtd.name), INFO_DUMP or INFO_ARGS, pInfo, idx) then
+      if KBase.GetProcInfo(PAnsiChar(mtd.name), [INFO_DUMP, INFO_ARGS], pInfo, idx) then
       Begin
         callKind := pInfo.CallKind;
         case pInfo.MethodKind of
@@ -2993,7 +3010,7 @@ Begin
       else
       Begin
         _name := recN.Name;
-        callKind := recN.procInfo.flags and 7;
+        callKind := recN.procInfo.call_kind;
         methodKind := recN.kind;
         if Assigned(recN.procInfo.args) then argsNum := recN.procInfo.args.Count
           else argsNum:=0;
@@ -3070,6 +3087,7 @@ Begin
         else line := _name;
     End
     else line := GetDefaultProcName(callAdr);
+    if propName <> '' then line:=line + '{' + propName + '}';
     if methodKind = ikFunc then
     Begin
       while true do
@@ -3202,7 +3220,7 @@ Begin
           End;
           if sep then line:=line + ', ';
           sep := true;
-          if (item.Flags and IF_STACK_PTR)<>0 then
+          if IF_STACK_PTR in item.Flags then
           Begin
             item1 := Env.Stack[item.IntValue];
             if kind = ikInteger then
@@ -3246,7 +3264,7 @@ Begin
                   raise Exception.Create('Possibly incorrect RecordSize (or incorrect type of record) '+item.Name);
                 End;
                 item1 := Env.Stack[item.IntValue + r];
-                item1.Flags := IF_FIELD;
+                item1.Flags := [IF_FIELD];
                 item1.Offset := r;
                 item1._Type := '';
                 if r = 0 then item1._Type := aInfo.TypeDef;
@@ -3263,13 +3281,13 @@ Begin
           if kind = ikInteger then
           Begin
             line:=line + item.Value;
-            if (item.Flags and IF_INTVAL)<>0 then line:=line + 'Begin' + GetImmString(item.IntValue) + 'End;';
+            if IF_INTVAL in item.Flags then line:=line + 'Begin' + GetImmString(item.IntValue) + 'End;';
             continue;
           End
           else if kind = ikChar then
           Begin
             line:=line + item.Value;
-            if (item.Flags and IF_INTVAL)<>0 then line:=line + 'Begin "' + IntToStr(item.IntValue) + '" End;';
+            if IF_INTVAL in item.Flags then line:=line + 'Begin "' + IntToStr(item.IntValue) + '" End;';
             continue;
           End
           else if kind in [ikLString, ikWString, ikUString, ikCString, ikWCString] then
@@ -3277,7 +3295,7 @@ Begin
             if item.Value <> '' then line:=line + item.Value
             else
             Begin
-              if (item.Flags and IF_INTVAL)<>0 then
+              if IF_INTVAL in item.Flags then
               Begin
                 if item.IntValue=0 then line:=line + ''''''
                 else
@@ -3303,7 +3321,7 @@ Begin
             if item.Value <> '' then line:=line + item.Value
             else
             Begin
-              if ((item.Flags and IF_INTVAL)<>0) and (item.IntValue=0) then line:=line + 'Nil'
+              if (IF_INTVAL in item.Flags) and (item.IntValue=0) then line:=line + 'Nil'
                 else line:=line + '?';
             End;
             continue;
@@ -3311,7 +3329,7 @@ Begin
           else if kind = ikEnumeration then
           Begin
             if rn <> -1 then line:=line + regName + 'Begin';
-            if (item.Flags and IF_INTVAL)<>0 then
+            if IF_INTVAL in item.Flags then
               line:=line + GetEnumerationString(aInfo.TypeDef, item.IntValue)
             else if item.Value <> '' then
               line:=line + item.Value;
@@ -3320,7 +3338,7 @@ Begin
           End
           else if kind = ikSet then
           Begin
-            if (item.Flags and IF_INTVAL)<>0 then
+            if IF_INTVAL in item.Flags then
             Begin
               if IsValidImageAdr(item.IntValue) then
                 line:=line + GetSetString(aInfo.TypeDef, Code + Adr2Pos(item.IntValue))
@@ -3337,7 +3355,7 @@ Begin
           End
           else if kind = ikFloat then
           Begin
-            if (item.Flags and IF_INTVAL)<>0 then
+            if IF_INTVAL in item.Flags then
             Begin
               GetFloatItemFromStack(_esp, @item, FloatNameToFloatType(aInfo.TypeDef));
               line:=line + item.Value;
@@ -3357,7 +3375,7 @@ Begin
           End
           else if kind = ikPointer then
           Begin
-            if ((item.Flags and IF_INTVAL)<>0) and IsValidImageAdr(item.IntValue) then
+            if (IF_INTVAL in item.Flags) and IsValidImageAdr(item.IntValue) then
             Begin
               recN1 := GetInfoRec(item.IntValue);
               if Assigned(recN1) and (recN1.HasName) then
@@ -3386,7 +3404,7 @@ Begin
           Begin
             if SameText(item1.Value, 'Self') then
             Begin
-              if ((item.Flags and IF_INTVAL)<>0) and IsValidImageAdr(item.IntValue) then
+              if (IF_INTVAL in item.Flags) and IsValidImageAdr(item.IntValue) then
               Begin
                 recN1 := GetInfoRec(item.IntValue);
                 if Assigned(recN1) and recN1.HasName then
@@ -3401,7 +3419,7 @@ Begin
           End;
           if item.Value <> '' then
             line:=line + item.Value
-          else if (item.Flags and IF_INTVAL)<>0 then
+          else if IF_INTVAL in item.Flags then
             line:=line + IntToStr(item.IntValue)
           else line:=line + '?';
           continue;
@@ -3439,7 +3457,7 @@ Begin
             Dec(_esp, 4);
             item := Env.Stack[_esp];
           End;
-          if (item.Flags and IF_STACK_PTR)<>0 then
+          if IF_STACK_PTR in item.Flags then
           Begin
             if item.Name <> '' then
               line := item.Name + ' := ' + line
@@ -3458,14 +3476,14 @@ Begin
                   raise Exception.Create('Possibly incorrect RecordSize (or incorrect type of record) '+item.Name);
                 End;
                 item1 := Env.Stack[item.IntValue + r];
-                item1.Flags := IF_FIELD;
+                item1.Flags := [IF_FIELD];
                 item1.Offset := r;
                 item1._Type := '';
                 if r = 0 then item1._Type := retType;
                 Env.Stack[item.IntValue + r] := item1;
               End;
             End;
-            Env.Stack[item.IntValue].Flags := 0;
+            Env.Stack[item.IntValue].Flags := [];
             Env.Stack[item.IntValue]._Type := retType;
           End
           else line := item.Value + ' := ' + line;
@@ -3489,7 +3507,7 @@ Begin
           //???__int64
           InitItem(@item);
           item.Precedence := PRECEDENCE_ATOM;
-          item.Flags := IF_CALL_RESULT;
+          item.Flags := [IF_CALL_RESULT];
           item.Value := line;
           item._Type := retType;
           SetRegItem(16, item);
@@ -3506,7 +3524,7 @@ Begin
       Begin
         InitItem(@item);
         item.Precedence := PRECEDENCE_ATOM;
-        item.Flags := IF_CALL_RESULT;
+        item.Flags := [IF_CALL_RESULT];
         item.Value := line;
         item._Type := retType;
         SetRegItem(16, item);
@@ -3551,11 +3569,11 @@ Begin
     //  raise Exception.Create('Under construction');
     //End;
     if item._Type <> '' then classAdr := GetClassAdr(item._Type);
-    if (item.Flags and IF_VMT_ADR)<>0 then classAdr := item.IntValue;
+    if IF_VMT_ADR in item.Flags then classAdr := item.IntValue;
     if IsValidImageAdr(classAdr) then
     Begin
       //Interface
-      if (item.Flags and IF_INTERFACE)<>0 then
+      if IF_INTERFACE in item.Flags then
       Begin
         Env.AddToBody(item.Value + '.I' + IntToStr(DisaInfo.Offset) + '(...);');
         _value := ManualInput(CurProcAdr, curAdr, 'Enter number of RET bytes (in hex) of procedure at ' + Val2Str(curAdr,8), 'Bytes:');
@@ -3630,7 +3648,7 @@ Begin
         Exit;
       End;
     End;
-    if (item.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item.Flags then
     Begin
       item := Env.Stack[item.IntValue + DisaInfo.Offset];
       line := item.Value + ';';
@@ -3778,7 +3796,7 @@ Begin
       Begin
         _pos := GetNearestUpInstruction(_pos);
         instrLen := frmDisasm.Disassemble(Code + _pos, Pos2Adr(_pos), @_disInfo, Nil);
-        if _disInfo.Branch or IsFlagSet(cfProcStart, _pos) then
+        if _disInfo.Branch or IsFlagSet([cfProcStart], _pos) then
         Begin
           Result := TLoopInfo.Create('R', fromAdr, brkAdr, lastAdr); //repeat
           Exit;
@@ -3790,10 +3808,10 @@ Begin
             and IsSameRegister(_disInfo.OpRegIdx[0], varIdxInfo.IdxValue) then
           Begin
             GetRegItem(varIdxInfo.IdxValue, item);
-            if (item.Flags and IF_INTVAL)<>0 then
+            if IF_INTVAL in item.Flags then
             Begin
               from := IntToStr(item.IntValue);
-              item.Flags := item.Flags and not IF_INTVAL;
+              Exclude(item.Flags, IF_INTVAL);
             End
             else from := item.Value;
             item.Value := GetDecompilerRegisterName(varIdxInfo.IdxValue);
@@ -3807,7 +3825,7 @@ Begin
               GetRegItem(_disInfo.BaseReg, item);
               if item.IntValue + _disInfo.Offset = varIdxInfo.IdxValue then
               Begin
-                if (Env.Stack[varIdxInfo.IdxValue].Flags and IF_INTVAL)<>0 then
+                if IF_INTVAL in Env.Stack[varIdxInfo.IdxValue].Flags then
                   from := IntToStr(Env.Stack[varIdxInfo.IdxValue].IntValue)
                 else
                   from := Env.Stack[varIdxInfo.IdxValue].Value;
@@ -3819,7 +3837,7 @@ Begin
             Begin
               if _ESP_ + _disInfo.Offset = varIdxInfo.IdxValue then
               Begin
-                if (Env.Stack[varIdxInfo.IdxValue].Flags and IF_INTVAL)<>0 then
+                if IF_INTVAL in Env.Stack[varIdxInfo.IdxValue].Flags then
                   from := IntToStr(Env.Stack[varIdxInfo.IdxValue].IntValue)
                 else
                   from := Env.Stack[varIdxInfo.IdxValue].Value;
@@ -3842,7 +3860,7 @@ Begin
         Begin
           idx := _disInfo.OpRegIdx[0];
           GetRegItem(idx, item);
-          item.Flags := item.Flags or IF_ARRAY_PTR;
+          Include(item.Flags, IF_ARRAY_PTR);
           SetRegItem(idx, item);
           Inc(_pos, instrLen);
           continue;
@@ -3852,7 +3870,7 @@ Begin
         Begin
           idx := _disInfo.OpRegIdx[0];
           GetRegItem(idx, item);
-          item.Flags := item.Flags or IF_ARRAY_PTR;
+          Include(item.Flags, IF_ARRAY_PTR);
           SetRegItem(idx, item);
           Inc(_pos, instrLen);
           continue;
@@ -3865,7 +3883,7 @@ Begin
             if _disInfo.OpType[0] = otREG then
             Begin
               GetRegItem(_disInfo.OpRegIdx[0], item);
-              item.Flags := item.Flags or IF_ARRAY_PTR;
+              Include(item.Flags, IF_ARRAY_PTR);
               SetRegItem(_disInfo.OpRegIdx[0], item);
             End;
             if _disInfo.OpType[0] = otMEM then
@@ -3881,19 +3899,19 @@ Begin
                 Begin
                   idxVal := _ESP_ + _disInfo.Offset;
                 End;
-                Env.Stack[idxVal].Flags := Env.Stack[idxVal].Flags or IF_ARRAY_PTR;
+                Include(Env.Stack[idxVal].Flags, IF_ARRAY_PTR);
               End;
             End;
           End
           else if _disInfo.OpType[1] = otREG then
           Begin
             GetRegItem(_disInfo.OpRegIdx[1], item);
-            if (item.Flags and IF_ARRAY_PTR)<>0 then
+            if IF_ARRAY_PTR in item.Flags then
             Begin
               if _disInfo.OpType[0] = otREG then
               Begin
                 GetRegItem(_disInfo.OpRegIdx[0], item);
-                item.Flags := item.Flags or IF_ARRAY_PTR;
+                Include(item.Flags, IF_ARRAY_PTR);
                 SetRegItem(_disInfo.OpRegIdx[0], item);
               End
               else if _disInfo.OpType[0] = otMEM then
@@ -3905,11 +3923,8 @@ Begin
                     GetRegItem(_disInfo.BaseReg, item);
                     idxVal := item.IntValue + _disInfo.Offset;
                   End
-                  else //[esp-N]
-                  Begin
-                    idxVal := _ESP_ + _disInfo.Offset;
-                  End;
-                  Env.Stack[idxVal].Flags := Env.Stack[idxVal].Flags or IF_ARRAY_PTR;
+                  else idxVal := _ESP_ + _disInfo.Offset; //[esp-N]
+                  Include(Env.Stack[idxVal].Flags, IF_ARRAY_PTR);
                 End;
               End;
             End;
@@ -3927,10 +3942,10 @@ Begin
               Begin
                 idxVal := _ESP_ + _disInfo.Offset;
               End;
-              if (Env.Stack[idxVal].Flags and IF_ARRAY_PTR)<>0 then
+              if IF_ARRAY_PTR in Env.Stack[idxVal].Flags then
               Begin
                 GetRegItem(_disInfo.OpRegIdx[0], item);
-                item.Flags := item.Flags or IF_ARRAY_PTR;
+                Include(item.Flags, IF_ARRAY_PTR);
                 SetRegItem(_disInfo.OpRegIdx[0], item);
               End;
             End;
@@ -3952,7 +3967,7 @@ Begin
           if _disInfo.OpType[0] = otREG then
           Begin
             GetRegItem(_disInfo.OpRegIdx[0], item);
-            if (item.Flags and IF_ARRAY_PTR)<>0 then
+            if IF_ARRAY_PTR in item.Flags then
             Begin
               stopAdr := Pos2Adr(_pos);
               continue;
@@ -3977,7 +3992,7 @@ Begin
               Begin
                 idxVal := _ESP_ + _disInfo.Offset;
               End;
-              if (Env.Stack[idxVal].Flags and IF_ARRAY_PTR)<>0 then
+              if IF_ARRAY_PTR in Env.Stack[idxVal].Flags then
               Begin
                 stopAdr := Pos2Adr(_pos);
                 continue;
@@ -4007,7 +4022,7 @@ Begin
       if _disInfo.OpType[0] = otREG then
       Begin
         GetRegItem(_disInfo.OpRegIdx[0], item);
-        if (item.Flags and IF_INTVAL)<>0 then
+        if IF_INTVAL in item.Flags then
           cnt := IntToStr(item.IntValue)
         else if item.Value1 <> '' then
           cnt := item.Value1
@@ -4023,7 +4038,7 @@ Begin
             item := Env.Stack[item.IntValue + _disInfo.Offset]
           else //[esp-N]
             item := Env.Stack[_ESP_ + _disInfo.Offset];
-          if (item.Flags and IF_INTVAL)<>0 then
+          if IF_INTVAL in item.Flags then
             cnt := IntToStr(item.IntValue)
           else
             cnt := item.Value;
@@ -4049,7 +4064,7 @@ Begin
         Begin
           idx := _disInfo.OpRegIdx[0];
           GetRegItem(idx, item);
-          item.Flags := item.Flags or IF_ARRAY_PTR;
+          Include(item.Flags, IF_ARRAY_PTR);
           SetRegItem(idx, item);
           Inc(_pos, instrLen);
           continue;
@@ -4059,7 +4074,7 @@ Begin
         Begin
           idx := _disInfo.OpRegIdx[0];
           GetRegItem(idx, item);
-          item.Flags := item.Flags or IF_ARRAY_PTR;
+          Include(item.Flags, IF_ARRAY_PTR);
           SetRegItem(idx, item);
           Inc(_pos, instrLen);
           continue;
@@ -4078,7 +4093,7 @@ Begin
               if _disInfo.OpType[0] = otREG then
               Begin
                 GetRegItem(_disInfo.OpRegIdx[0], item);
-                item.Flags := item.Flags or IF_ARRAY_PTR;
+                Include(item.Flags, IF_ARRAY_PTR);
                 SetRegItem(_disInfo.OpRegIdx[0], item);
               End
               else //otMEM
@@ -4090,9 +4105,8 @@ Begin
                     GetRegItem(_disInfo.BaseReg, item);
                     idxVal := item.IntValue + _disInfo.Offset;
                   End
-                  else //[esp-N]
-                    idxVal := _ESP_ + _disInfo.Offset;
-                  Env.Stack[idxVal].Flags := Env.Stack[idxVal].Flags or IF_ARRAY_PTR;
+                  else idxVal := _ESP_ + _disInfo.Offset; //[esp-N]
+                  Include(Env.Stack[idxVal].Flags, IF_ARRAY_PTR);
                 End;
               End;
             End;
@@ -4101,12 +4115,12 @@ Begin
           Begin
             GetRegItem(_disInfo.OpRegIdx[1], item);
             kind := GetTypeKind(item._Type, _size);
-            if ((item.Flags and IF_ARRAY_PTR)<>0) or (kind = ikArray) or (kind = ikDynArray) then
+            if (IF_ARRAY_PTR in item.Flags) or (kind in [ikArray, ikDynArray]) then
             Begin
               if _disInfo.OpType[0] = otREG then
               Begin
                 GetRegItem(_disInfo.OpRegIdx[0], item);
-                item.Flags := item.Flags or IF_ARRAY_PTR;
+                Include(item.Flags, IF_ARRAY_PTR);
                 SetRegItem(_disInfo.OpRegIdx[0], item);
               End
               else //otMEM
@@ -4118,9 +4132,8 @@ Begin
                     GetRegItem(_disInfo.BaseReg, item);
                     idxVal := item.IntValue + _disInfo.Offset;
                   End
-                  else //[esp-N]
-                    idxVal := _ESP_ + _disInfo.Offset;
-                  Env.Stack[idxVal].Flags := Env.Stack[idxVal].Flags or IF_ARRAY_PTR;
+                  else idxVal := _ESP_ + _disInfo.Offset; //[esp-N]
+                  Include(Env.Stack[idxVal].Flags, IF_ARRAY_PTR);
                 End;
               End;
             End
@@ -4143,15 +4156,15 @@ Begin
               else //[esp-N]
                 idxVal := _ESP_ + _disInfo.Offset;
               item := Env.Stack[idxVal];
-              if (item.Flags and IF_VAR)<>0 then
+              if IF_VAR in item.Flags then
               Begin
                 GetRegItem(_disInfo.OpRegIdx[0], item);
-                item.Flags := item.Flags or IF_ARRAY_PTR;
+                Include(item.Flags, IF_ARRAY_PTR);
                 SetRegItem(_disInfo.OpRegIdx[0], item);
                 Inc(_pos, instrLen);
                 continue;
               End;
-              if (item.Flags and IF_ARRAY_PTR)=0 then
+              if Not (IF_ARRAY_PTR in item.Flags) then
               Begin
                 GetCycleIdx(@varIdxInfo, _disInfo);
                 noVar := false;
@@ -4174,7 +4187,7 @@ Begin
           if _disInfo.OpType[0] = otREG then
           Begin
             GetRegItem(_disInfo.OpRegIdx[0], item);
-            if (item.Flags and IF_ARRAY_PTR)<>0 then
+            if IF_ARRAY_PTR in item.Flags then
             Begin
               stopAdr := Pos2Adr(_pos);
               continue;
@@ -4182,10 +4195,10 @@ Begin
             if noVar then
             Begin
               GetCycleIdx(@varIdxInfo, _disInfo);
-              if (item.Flags and IF_INTVAL)<>0 then
+              if IF_INTVAL in item.Flags then
               Begin
                 from := IntToStr(item.IntValue);
-                item.Flags := item.Flags and not IF_INTVAL;
+                Exclude(item.Flags, IF_INTVAL);
               End
               else from := item.Value;
               stopAdr := Pos2Adr(_pos);
@@ -4208,7 +4221,7 @@ Begin
               else //[esp-N]
                 idxVal := _ESP_ + _disInfo.Offset;
               item := Env.Stack[idxVal];
-              if (item.Flags and IF_ARRAY_PTR)<>0 then
+              if IF_ARRAY_PTR in item.Flags then
               Begin
                 stopAdr := Pos2Adr(_pos);
                 continue;
@@ -4232,10 +4245,10 @@ Begin
           if SameText(from, '1') then _to := cnt
             else _to := cnt + ' + ' + from + ' - 1';
           GetRegItem(cntIdxInfo.IdxValue, item);
-          if (item.Flags and IF_INTVAL)<>0 then
+          if IF_INTVAL in item.Flags then
           Begin
             //_to := IntToStr(item.IntValue);
-            item.Flags := item.Flags and not IF_INTVAL;
+            Exclude(item.Flags, IF_INTVAL);
           End;
           //else _to := item.Value;
           item.Value := GetDecompilerRegisterName(cntIdxInfo.IdxValue);
@@ -4244,10 +4257,10 @@ Begin
         else if cntIdxInfo.IdxType = itLVAR then
         Begin
           item := Env.Stack[cntIdxInfo.IdxValue];
-          if (item.Flags and IF_INTVAL)<>0 then
+          if IF_INTVAL in item.Flags then
           Begin
             //_to := IntToStr(item.IntValue);
-            item.Flags := item.Flags and not IF_INTVAL;
+            Exclude(item.Flags, IF_INTVAL);
           End;
           //else _to := item.Value;
           item.Value := Env.GetLvarName(cntIdxInfo.IdxValue);
@@ -4259,14 +4272,14 @@ Begin
         if varIdxInfo.IdxType = itREG then
         Begin
           GetRegItem(varIdxInfo.IdxValue, item);
-          if (item.Flags and IF_INTVAL)<>0 then
+          if IF_INTVAL in item.Flags then
           Begin
             if from = '' then from := IntToStr(item.IntValue);
-            item.Flags := item.Flags and not IF_INTVAL;
+            Exclude(item.Flags, IF_INTVAL);
           End
           else if from = '' then from := item.Value;
           item.Value := GetDecompilerRegisterName(varIdxInfo.IdxValue);
-          item.Flags := item.Flags or IF_CYCLE_VAR;
+          Include(item.Flags, IF_CYCLE_VAR);
           SetRegItem(varIdxInfo.IdxValue, item);
         End
         else if varIdxInfo.IdxType = itLVAR then
@@ -4274,16 +4287,16 @@ Begin
           item := Env.Stack[varIdxInfo.IdxValue];
           from := item.Value1;
           item.Value := Env.GetLvarName(varIdxInfo.IdxValue);
-          item.Flags := item.Flags or IF_CYCLE_VAR;
+          Include(item.Flags, IF_CYCLE_VAR);
           Env.Stack[varIdxInfo.IdxValue] := item;
         End;
         if cntIdxInfo.IdxType = itREG then
         Begin
           GetRegItem(cntIdxInfo.IdxValue, item);
-          if (item.Flags and IF_INTVAL)<>0 then
+          if IF_INTVAL in item.Flags then
           Begin
             if cnt = '' then cnt := IntToStr(item.IntValue);
-            item.Flags := item.Flags and not IF_INTVAL;
+            Exclude(item.Flags, IF_INTVAL);
           End
           else if cnt = '' then cnt := item.Value;
           item.Value := GetDecompilerRegisterName(cntIdxInfo.IdxValue);
@@ -4309,12 +4322,12 @@ end;
 Procedure TDecompiler.SimulatePush (curAdr:Integer);
 var
   _vmt:Boolean;
-  _offset, _idx:Integer;
+  offset, idx:Integer;
   _vmtAdr:Integer;
-  _item, _item1:TItem;
+  item, item1:TItem;
   recN:InfoRec;
   fInfo:FieldInfo;
-  _name, _typeName, _value:AnsiString;
+  _name, typeName, _value:AnsiString;
 Begin
   //push imm
   if DisaInfo.OpType[0] = otIMM then
@@ -4324,148 +4337,148 @@ Begin
       recN := GetInfoRec(DisaInfo.Immediate);
       if Assigned(recN) and (recN.kind in [ikLString, ikWString, ikUString]) then
       Begin
-        InitItem(@_item);
-        _item.Value := recN.Name;
-        _item._Type := 'String';
-        Push(@_item);
+        InitItem(@item);
+        item.Value := recN.Name;
+        item._Type := 'String';
+        Push(@item);
         Exit;
       End;
     End;
-    InitItem(@_item);
-    _item.Flags := IF_INTVAL;
-    _item.IntValue := DisaInfo.Immediate;
-    Push(@_item);
+    InitItem(@item);
+    item.Flags := [IF_INTVAL];
+    item.IntValue := DisaInfo.Immediate;
+    Push(@item);
     Exit;
   End
   //push reg
   else if DisaInfo.OpType[0] = otREG then
   Begin
-    _idx := DisaInfo.OpRegIdx[0];
+    idx := DisaInfo.OpRegIdx[0];
     //push esp
-    if _idx = 20 then
+    if idx = 20 then
     Begin
-      InitItem(@_item);
-      _item.Flags := IF_STACK_PTR;
-      _item.IntValue := _ESP_;
-      Push(@_item);
+      InitItem(@item);
+      item.Flags := [IF_STACK_PTR];
+      item.IntValue := _ESP_;
+      Push(@item);
       Exit;
     End;
-    GetRegItem(_idx, _item);
-    _value := GetDecompilerRegisterName(_idx);
-    if _item.Value <> '' then _value := _item.Value + 'Begin' + _value + 'End;';
-    _item.Value := _value;
+    GetRegItem(idx, item);
+    _value := GetDecompilerRegisterName(idx);
+    if item.Value <> '' then _value := item.Value + 'Begin' + _value + 'End;';
+    item.Value := _value;
 
     //push eax - clear flag IF_CALL_RESULT
-    if (_item.Flags and IF_CALL_RESULT)<>0 then
+    if IF_CALL_RESULT in item.Flags then
     Begin
-      _item.Flags := _item.Flags and not IF_CALL_RESULT;
-      SetRegItem(_idx, _item);
+      Exclude(item.Flags, IF_CALL_RESULT);
+      SetRegItem(idx, item);
     End;
     //if (_item.Flags and IF_ARG)<>0 then
     //Begin
     //  _item.Flags := _item.Flags and not IF_ARG;
     //  _item.Name := '';
     //End;
-    Push(@_item);
+    Push(@item);
     Exit;
   End
   //push mem
   else if DisaInfo.OpType[0] = otMEM then
   Begin
-    GetMemItem(curAdr, @_item, OP_PUSH);
-    Push(@_item);
+    GetMemItem(curAdr, @item, OP_PUSH);
+    Push(@item);
     Exit; // !!!!!!! why so early ??? what about the rest of the code below ?
 
-    _offset := DisaInfo.Offset;
+    offset := DisaInfo.Offset;
     //push [BaseReg + IndxReg*Scale + Offset]
     if DisaInfo.BaseReg <> -1 then
     Begin
       if DisaInfo.BaseReg = 20 then
       Begin
-        _item := Env.Stack[_ESP_ + _offset];
-        Push(@_item);
+        item := Env.Stack[_ESP_ + offset];
+        Push(@item);
         Exit;
       End;
-      GetRegItem(DisaInfo.BaseReg, _item1);
+      GetRegItem(DisaInfo.BaseReg, item1);
       //cop reg, [BaseReg + Offset]
       if DisaInfo.IndxReg = -1 then
       Begin
         //push [ebp-N]
-        if (_item1.Flags and IF_STACK_PTR)<>0 then
+        if IF_STACK_PTR in item1.Flags then
         Begin
-          _name := Env.GetLvarName(_item1.IntValue + _offset);
-          _item := Env.Stack[_item1.IntValue + _offset];
-          _item.Value := _name;
-          Push(@_item);
+          _name := Env.GetLvarName(item1.IntValue + offset);
+          item := Env.Stack[item1.IntValue + offset];
+          item.Value := _name;
+          Push(@item);
           Exit;
         End;
         //push [reg]
-        if _offset=0 then
+        if offset=0 then
         Begin
           //var
-          if (_item1.Flags and IF_VAR)<>0 then
+          if IF_VAR in item1.Flags then
           Begin
-            InitItem(@_item);
-            _item.Value := _item1.Value;
-            _item._Type := _item1._Type;
-            Push(@_item);
+            InitItem(@item);
+            item.Value := item1.Value;
+            item._Type := item1._Type;
+            Push(@item);
             Exit;
           End;
-          if IsValidImageAdr(_item1.IntValue) then
+          if IsValidImageAdr(item1.IntValue) then
           Begin
-            recN := GetInfoRec(_item1.IntValue);
+            recN := GetInfoRec(item1.IntValue);
             if Assigned(recN) then
             Begin
-              InitItem(@_item);
-              _item.Value := recN.Name;
-              _item._Type := recN._type;
-              Push(@_item);
+              InitItem(@item);
+              item.Value := recN.Name;
+              item._Type := recN._type;
+              Push(@item);
               Exit;
             End;
           End;
         End;
-        _typeName := TrimTypeName(GetRegType(DisaInfo.BaseReg));
-        if _typeName <> '' then
+        typeName := TrimTypeName(GetRegType(DisaInfo.BaseReg));
+        if typeName <> '' then
         Begin
-          if _typeName[1] = '^' then   //Pointer to gvar (from other unit)
+          if typeName[1] = '^' then   //Pointer to gvar (from other unit)
           Begin
-            InitItem(@_item);
-            _item.Value := _item1.Value;
-            _item._Type := GetTypeDeref(_typeName);
-            Push(@_item);
+            InitItem(@item);
+            item.Value := item1.Value;
+            item._Type := GetTypeDeref(typeName);
+            Push(@item);
             Exit;
           End;
           //push [reg+N]
-          fInfo := FMain.GetField(_typeName, _offset, _vmt, _vmtAdr);
+          fInfo := FMain.GetField(typeName, offset, _vmt, _vmtAdr);
           if Assigned(fInfo) then
           Begin
-            InitItem(@_item);
+            InitItem(@item);
             _name := GetFieldName(fInfo);
-            if SameText(_item1.Value, 'Self') then
-              _item.Value := _name
+            if SameText(item1.Value, 'Self') then
+              item.Value := _name
             else
-              _item.Value := _item1.Value + '.' + _name;
-            _item._Type := fInfo._Type;
-            Push(@_item);
+              item.Value := item1.Value + '.' + _name;
+            item._Type := fInfo._Type;
+            Push(@item);
             Exit;
           End;
         End;
       End;
     End;
     //[Offset]
-    if IsValidImageAdr(_offset) then
+    if IsValidImageAdr(offset) then
     Begin
-      recN := GetInfoRec(_offset);
+      recN := GetInfoRec(offset);
       if Assigned(recN) then
       Begin
-        InitItem(@_item);
-        _item.Value := recN.Name;
-        _item._Type := recN._type;
-        Push(@_item);
+        InitItem(@item);
+        item.Value := recN.Name;
+        item._Type := recN._type;
+        Push(@item);
         Exit;
       End;
-      InitItem(@_item);
-      Push(@_item);
+      InitItem(@item);
+      Push(@item);
       Exit;
     End
     else
@@ -4481,20 +4494,20 @@ end;
 Procedure TDecompiler.SimulatePop (curAdr:Integer);
 Var
   line:AnsiString;
-  _item:PItem;
+  item:PItem;
 Begin
   //pop reg
   if DisaInfo.OpType[0] = otREG then
   begin
-    _item := Pop;
-    if (_item.Flags and IF_ARG)<>0 then
-      if not IsFlagSet(cfFrame, Adr2Pos(curAdr)) then
+    item := Pop;
+    if IF_ARG in item.Flags then
+      if not IsFlagSet([cfFrame], Adr2Pos(curAdr)) then
       begin
-        line := GetDecompilerRegisterName(DisaInfo.OpRegIdx[0]) + ' := ' + _item.Name + ';';
+        line := GetDecompilerRegisterName(DisaInfo.OpRegIdx[0]) + ' := ' + item.Name + ';';
         Env.AddToBody(line);
       end;
-    _item.Precedence := PRECEDENCE_NONE;
-    SetRegItem(DisaInfo.OpRegIdx[0], _item^);
+    item.Precedence := PRECEDENCE_NONE;
+    SetRegItem(DisaInfo.OpRegIdx[0], item^);
     Exit;
   End
   //pop mem
@@ -4508,80 +4521,80 @@ end;
 
 Procedure TDecompiler.SimulateInstr1 (curAdr:Integer; Op:Byte);
 var
-  _regIdx, _offset:Integer;
-  _item, _item1, _item2, _itemBase, _itemSrc:TItem;
+  regIdx, offset:Integer;
+  item, item1, item2, itemBase, itemSrc:TItem;
   _name, _value, line:AnsiString;
 Begin
   //op reg
   if DisaInfo.OpType[0] = otREG then
   Begin
-    _regIdx := DisaInfo.OpRegIdx[0];
+    regIdx := DisaInfo.OpRegIdx[0];
     if Op = OP_INC then
     Begin
-      GetRegItem(_regIdx, _item);
-      _item.Precedence := PRECEDENCE_ADD;
-      _item.Value := _item.Value + ' + 1';
-      SetRegItem(_regIdx, _item);
-      line := GetDecompilerRegisterName(_regIdx) + ' := ' + GetDecompilerRegisterName(_regIdx) + ' + 1;';
-      if _item.Value <> '' then line:=line + ' //' + _item.Value;
+      GetRegItem(regIdx, item);
+      item.Precedence := PRECEDENCE_ADD;
+      item.Value := item.Value + ' + 1';
+      SetRegItem(regIdx, item);
+      line := GetDecompilerRegisterName(regIdx) + ' := ' + GetDecompilerRegisterName(regIdx) + ' + 1;';
+      if item.Value <> '' then line:=line + ' //' + item.Value;
       Env.AddToBody(line);
       Exit;
     End
     else if Op = OP_DEC then
     Begin
-      GetRegItem(_regIdx, _item);
-      _item.Precedence := PRECEDENCE_ADD;
-      _item.Value := _item.Value + ' - 1';
-      SetRegItem(_regIdx, _item);
-      line := GetDecompilerRegisterName(_regIdx) + ' := ' + GetDecompilerRegisterName(_regIdx) + ' - 1;';
-      if _item.Value <> '' then line:=line + ' //' + _item.Value;
+      GetRegItem(regIdx, item);
+      item.Precedence := PRECEDENCE_ADD;
+      item.Value := item.Value + ' - 1';
+      SetRegItem(regIdx, item);
+      line := GetDecompilerRegisterName(regIdx) + ' := ' + GetDecompilerRegisterName(regIdx) + ' - 1;';
+      if item.Value <> '' then line:=line + ' //' + item.Value;
       Env.AddToBody(line);
       Exit;
     End
     else if Op = OP_IMUL then
     Begin
-      GetRegItem(_regIdx, _item1);
-      GetRegItem(16, _item2);
-      InitItem(@_item);
-      _item.Precedence := PRECEDENCE_MULT;
-      _item.Value := _item1.Value + ' * ' + _item2.Value;
-      _item._Type := 'Int64';
-      SetRegItem(16, _item);
-      SetRegItem(18, _item);
-      line := 'EDX_EAX := ' + GetDecompilerRegisterName(_regIdx) + ' * ' + 'EAX;';
-      if _item.Value <> '' then line:=line + ' //' + _item.Value;
+      GetRegItem(regIdx, item1);
+      GetRegItem(16, item2);
+      InitItem(@item);
+      item.Precedence := PRECEDENCE_MULT;
+      item.Value := item1.Value + ' * ' + item2.Value;
+      item._Type := 'Int64';
+      SetRegItem(16, item);
+      SetRegItem(18, item);
+      line := 'EDX_EAX := ' + GetDecompilerRegisterName(regIdx) + ' * ' + 'EAX;';
+      if item.Value <> '' then line:=line + ' //' + item.Value;
       Env.AddToBody(line);
       Exit;
     End
     else if Op = OP_NEG then
     Begin
-      GetRegItem(_regIdx, _item);
-      _item.Precedence := PRECEDENCE_ATOM;
-      _item.Value := '-' + _item.Value;
-      SetRegItem(_regIdx, _item);
-      line := GetDecompilerRegisterName(_regIdx) + ' := -' + GetDecompilerRegisterName(_regIdx) + ';';
-      if _item.Value <> '' then line:=line + ' //' + _item.Value;
+      GetRegItem(regIdx, item);
+      item.Precedence := PRECEDENCE_ATOM;
+      item.Value := '-' + item.Value;
+      SetRegItem(regIdx, item);
+      line := GetDecompilerRegisterName(regIdx) + ' := -' + GetDecompilerRegisterName(regIdx) + ';';
+      if item.Value <> '' then line:=line + ' //' + item.Value;
       Env.AddToBody(line);
       Exit;
     End
     else if Op = OP_NOT then
     Begin
-      GetRegItem(_regIdx, _item);
-      _item.Precedence := PRECEDENCE_ATOM;
-      _item.Value := 'not ' + _item.Value;
-      SetRegItem(_regIdx, _item);
-      line := GetDecompilerRegisterName(_regIdx) + ' := not ' + GetDecompilerRegisterName(_regIdx) + ';';
-      if _item.Value <> '' then line:=line + ' //' + _item.Value;
+      GetRegItem(regIdx, item);
+      item.Precedence := PRECEDENCE_ATOM;
+      item.Value := 'not ' + item.Value;
+      SetRegItem(regIdx, item);
+      line := GetDecompilerRegisterName(regIdx) + ' := not ' + GetDecompilerRegisterName(regIdx) + ';';
+      if item.Value <> '' then line:=line + ' //' + item.Value;
       Env.AddToBody(line);
       Exit;
     End
     else if Op = OP_SET then
     Begin
-      InitItem(@_item);
-      _item.Value := CompInfo.L + ' ' + GetDirectCondition(CompInfo.O) + ' ' + CompInfo.R;
-      _item._Type := 'Boolean';
-      SetRegItem(_regIdx, _item);
-      line := GetDecompilerRegisterName(_regIdx) + ' := ' + '(' + _item.Value + ');';
+      InitItem(@item);
+      item.Value := CompInfo.L + ' ' + GetDirectCondition(CompInfo.O) + ' ' + CompInfo.R;
+      item._Type := 'Boolean';
+      SetRegItem(regIdx, item);
+      line := GetDecompilerRegisterName(regIdx) + ' := ' + '(' + item.Value + ');';
       Env.AddToBody(line);
       Exit;
     End;
@@ -4591,19 +4604,19 @@ Begin
   //op mem
   else if DisaInfo.OpType[0] = otMEM then
   Begin
-    GetMemItem(curAdr, @_itemSrc, Op);
-    if _itemSrc.Name <> '' then _value := _itemSrc.Name
-      else _value := _itemSrc.Value;
+    GetMemItem(curAdr, @itemSrc, Op);
+    if itemSrc.Name <> '' then _value := itemSrc.Name
+      else _value := itemSrc.Value;
     if Op = OP_IMUL then
     Begin
-      GetRegItem(16, _item1);
-      InitItem(@_item);
-      _item.Precedence := PRECEDENCE_MULT;
-      _item.Value := _value + ' * ' + _item1.Value;;
-      _item._Type := 'Int64';
-      SetRegItem(16, _item);
-      SetRegItem(18, _item);
-      line := 'EDX_EAX := ' + _item.Value + ';';
+      GetRegItem(16, item1);
+      InitItem(@item);
+      item.Precedence := PRECEDENCE_MULT;
+      item.Value := _value + ' * ' + item1.Value;;
+      item._Type := 'Int64';
+      SetRegItem(16, item);
+      SetRegItem(18, item);
+      line := 'EDX_EAX := ' + item.Value + ';';
       Env.AddToBody(line);
       Exit;
     End
@@ -4623,59 +4636,59 @@ Begin
     raise Exception.Create('Under construction');
     
     // !!!!!!!!!!!! - under construction ?
-    _offset := DisaInfo.Offset;
+    offset := DisaInfo.Offset;
     if DisaInfo.BaseReg <> -1 then
     Begin
       if DisaInfo.IndxReg = -1 then
       Begin
-        GetRegItem(DisaInfo.BaseReg, _itemBase);
+        GetRegItem(DisaInfo.BaseReg, itemBase);
         //op [esp+N]
         if DisaInfo.BaseReg = 20 then
           if Op = OP_IMUL then
           Begin
-            _item1 := Env.Stack[_ESP_ + _offset];
-            GetRegItem(16, _item2);
-            InitItem(@_item);
-            _item.Precedence := PRECEDENCE_MULT;
-            _item.Value := _item1.Value + ' * ' + _item2.Value;
-            _item._Type := 'Integer';
-            SetRegItem(16, _item);
-            SetRegItem(18, _item);
-            line := 'EDX_EAX := EAX * ' + Env.GetLvarName(_ESP_ + _offset) + '; //' + _item1.Value;
+            item1 := Env.Stack[_ESP_ + offset];
+            GetRegItem(16, item2);
+            InitItem(@item);
+            item.Precedence := PRECEDENCE_MULT;
+            item.Value := item1.Value + ' * ' + item2.Value;
+            item._Type := 'Integer';
+            SetRegItem(16, item);
+            SetRegItem(18, item);
+            line := 'EDX_EAX := EAX * ' + Env.GetLvarName(_ESP_ + offset) + '; //' + item1.Value;
             Env.AddToBody(line);
             Exit;
           End;
         //op [ebp-N]
-        if (DisaInfo.BaseReg = 21) and ((_itemBase.Flags and IF_STACK_PTR)<>0) then
+        if (DisaInfo.BaseReg = 21) and (IF_STACK_PTR in itemBase.Flags) then
           if Op = OP_IMUL then
           Begin
-            _item1 := Env.Stack[_itemBase.IntValue + _offset];
-            GetRegItem(16, _item2);
-            if _item1.Value <> '' then
-              _name := _item1.Value
+            item1 := Env.Stack[itemBase.IntValue + offset];
+            GetRegItem(16, item2);
+            if item1.Value <> '' then
+              _name := item1.Value
             else
-              _name := Env.GetLvarName(_itemBase.IntValue + _offset);
-            InitItem(@_item);
-            _item.Precedence := PRECEDENCE_MULT;
-            _item.Value := _name + ' * ' + _item2.Value;
-            _item._Type := 'Integer';
-            SetRegItem(16, _item);
-            SetRegItem(18, _item);
-            line := 'EDX_EAX := EAX * ' + Env.GetLvarName(_ESP_ + _offset) + '; //' + _item.Value;
+              _name := Env.GetLvarName(itemBase.IntValue + offset);
+            InitItem(@item);
+            item.Precedence := PRECEDENCE_MULT;
+            item.Value := _name + ' * ' + item2.Value;
+            item._Type := 'Integer';
+            SetRegItem(16, item);
+            SetRegItem(18, item);
+            line := 'EDX_EAX := EAX * ' + Env.GetLvarName(_ESP_ + offset) + '; //' + item.Value;
             Env.AddToBody(line);
             Exit;
           End;
-        if _itemBase._Type[1] = '^' then   //Pointer to gvar (from other unit)
+        if itemBase._Type[1] = '^' then   //Pointer to gvar (from other unit)
           if Op = OP_IMUL then
           Begin
-            GetRegItem(16, _item2);
-            InitItem(@_item);
-            _item.Precedence := PRECEDENCE_MULT;
-            _item.Value := GetString(@_item2, PRECEDENCE_MULT) + ' * ' + GetString(@_itemBase, PRECEDENCE_MULT);
-            _item._Type := 'Integer';
-            SetRegItem(16, _item);
-            SetRegItem(18, _item);
-            line := 'EDX_EAX := EAX * ' + _itemBase.Value + '; //' + _item.Value;
+            GetRegItem(16, item2);
+            InitItem(@item);
+            item.Precedence := PRECEDENCE_MULT;
+            item.Value := GetString(@item2, PRECEDENCE_MULT) + ' * ' + GetString(@itemBase, PRECEDENCE_MULT);
+            item._Type := 'Integer';
+            SetRegItem(16, item);
+            SetRegItem(18, item);
+            line := 'EDX_EAX := EAX * ' + itemBase.Value + '; //' + item.Value;
             Env.AddToBody(line);
             Exit;
           End;
@@ -4705,7 +4718,7 @@ Begin
   if Op = OP_MOV then
   Begin
     InitItem(@item);
-    item.Flags := IF_INTVAL;
+    item.Flags := [IF_INTVAL];
     item.IntValue := DisaInfo.Immediate;
     SetRegItem(reg1Idx, item);
     line := GetDecompilerRegisterName(reg1Idx) + ' := ' + imm + ';';
@@ -4723,7 +4736,7 @@ Begin
           kind1 := recN.kind;
           if kind1 = ikPointer then
           Begin
-            item.Flags := IF_INTVAL;
+            item.Flags := [IF_INTVAL];
             item.IntValue := DisaInfo.Immediate;
             SetRegItem(reg1Idx, item);
             Exit;
@@ -4732,7 +4745,7 @@ Begin
           case kind1 of
             ikSet:
               begin
-                item.Flags := IF_INTVAL;
+                item.Flags := [IF_INTVAL];
                 item.IntValue := DisaInfo.Immediate;
                 item.Value := GetDecompilerRegisterName(reg1Idx);
                 item._Type := recN._type;
@@ -4821,7 +4834,7 @@ Begin
         Exit;
       End;
     End;
-    item.Flags := IF_INTVAL;
+    item.Flags := [IF_INTVAL];
     item.IntValue := DisaInfo.Immediate;
     SetRegItem(reg1Idx, item);
     line := GetDecompilerRegisterName(reg1Idx) + ' := ' + imm + ';';
@@ -4868,7 +4881,7 @@ Begin
     //add reg, imm
     GetRegItem(reg1Idx, item1);
     //If stack ptr
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
     Begin
       Inc(item1.IntValue, DisaInfo.Immediate);
       SetRegItem(reg1Idx, item1);
@@ -4999,7 +5012,7 @@ Begin
     InitItem(@item);
     if DisaInfo.Immediate = -1 then
     Begin
-      item.Flags := IF_INTVAL;
+      item.Flags := [IF_INTVAL];
       item.IntValue := -1;
       item._Type := 'Cardinal';
     End
@@ -5088,64 +5101,64 @@ end;
 
 Procedure TDecompiler.SimulateInstr2RegReg (curAdr:Integer; Op:Byte);
 var
-  _reg1Idx, _reg2Idx:Integer;
-  _item, _item1, _item2:TItem;
+  reg1Idx, reg2Idx:Integer;
+  item, item1, item2:TItem;
   line, comment, _op:AnsiString;
 Begin
-  _reg1Idx := DisaInfo.OpRegIdx[0];
-  _reg2Idx := DisaInfo.OpRegIdx[1];
-  GetRegItem(_reg1Idx, _item1);
-  GetRegItem(_reg2Idx, _item2);
+  reg1Idx := DisaInfo.OpRegIdx[0];
+  reg2Idx := DisaInfo.OpRegIdx[1];
+  GetRegItem(reg1Idx, item1);
+  GetRegItem(reg2Idx, item2);
   if Op = OP_MOV then
   Begin
-    if IsSameRegister(_reg1Idx, _reg2Idx) then Exit;
+    if IsSameRegister(reg1Idx, reg2Idx) then Exit;
     //mov esp, reg
-    if _reg1Idx = 20 then
+    if reg1Idx = 20 then
     Begin
-      SetRegItem(20, _item2);
+      SetRegItem(20, item2);
       Exit;
     End;
     //mov reg, esp
-    if _reg2Idx = 20 then
+    if reg2Idx = 20 then
     Begin
-      InitItem(@_item);
-      _item.Flags := IF_STACK_PTR;
-      _item.IntValue := _ESP_;
-      SetRegItem(_reg1Idx, _item);
+      InitItem(@item);
+      item.Flags := [IF_STACK_PTR];
+      item.IntValue := _ESP_;
+      SetRegItem(reg1Idx, item);
       //mov ebp, esp
-      if Env.BpBased and (_reg1Idx = 21) and (Env.LocBase=0) then Env.LocBase := _ESP_;
+      if Env.BpBased and (reg1Idx = 21) and (Env.LocBase=0) then Env.LocBase := _ESP_;
       Exit;
     End;
     //mov reg, reg
-    if (_item2.Flags and IF_ARG)<>0 then
+    if IF_ARG in item2.Flags then
     Begin
-      if _reg1Idx <> _reg2Idx then
+      if reg1Idx <> reg2Idx then
       Begin
-        _item2.Flags := _item2.Flags and not IF_ARG;
-        _item2.Name := '';
-        SetRegItem(_reg1Idx, _item2);
-        line := GetDecompilerRegisterName(_reg1Idx) + ' := ' + _item2.Value + ';';
+        Exclude(item2.Flags, IF_ARG);
+        item2.Name := '';
+        SetRegItem(reg1Idx, item2);
+        line := GetDecompilerRegisterName(reg1Idx) + ' := ' + item2.Value + ';';
         Env.AddToBody(line);
       End;
       Exit;
     End;
     //mov reg, eax (eax - call result) . set eax to regnot not not not 
-    if (_item2.Flags and IF_CALL_RESULT)<>0 then
+    if IF_CALL_RESULT in item2.Flags then
     Begin
-      _item2.Flags := _item2.Flags and not IF_CALL_RESULT;
-      _item2.Value1 := _item2.Value;
-      _item2.Value := GetDecompilerRegisterName(_reg1Idx);
-      line := GetDecompilerRegisterName(_reg1Idx) + ' := ' + _item2.Value1 + ';';
-      SetRegItem(_reg1Idx, _item2);
+      Exclude(item2.Flags, IF_CALL_RESULT);
+      item2.Value1 := item2.Value;
+      item2.Value := GetDecompilerRegisterName(reg1Idx);
+      line := GetDecompilerRegisterName(reg1Idx) + ' := ' + item2.Value1 + ';';
+      SetRegItem(reg1Idx, item2);
       Env.AddToBody(line);
       Exit;
     End;
-    line := GetDecompilerRegisterName(_reg1Idx) + ' := ' + GetDecompilerRegisterName(_reg2Idx) + ';';
-    if _item2.Value <> '' then line:=line + ' //' + _item2.Value;
-    _item2.Flags := 0;
-    if _item2.Value = '' then
-      _item2.Value := GetDecompilerRegisterName(_reg2Idx);
-    SetRegItem(_reg1Idx, _item2);
+    line := GetDecompilerRegisterName(reg1Idx) + ' := ' + GetDecompilerRegisterName(reg2Idx) + ';';
+    if item2.Value <> '' then line:=line + ' //' + item2.Value;
+    item2.Flags := [];
+    if item2.Value = '' then
+      item2.Value := GetDecompilerRegisterName(reg2Idx);
+    SetRegItem(reg1Idx, item2);
     Env.AddToBody(line);
     Exit;
   End
@@ -5155,30 +5168,30 @@ Begin
     //kind1 := GetTypeKind(_item1.Type, _size);
     //kind2 := GetTypeKind(_item2.Type, _size);
     //not not not  if kind1 <> kind2 ???
-    CompInfo.L := GetDecompilerRegisterName(_reg1Idx);
-    if (_item1.Value <> '') and not SameText(_item1.Value, CompInfo.L) then
-      CompInfo.L := CompInfo.L + 'Begin' + _item1.Value + 'End;';
+    CompInfo.L := GetDecompilerRegisterName(reg1Idx);
+    if (item1.Value <> '') and not SameText(item1.Value, CompInfo.L) then
+      CompInfo.L := CompInfo.L + 'Begin' + item1.Value + 'End;';
     CompInfo.O := CmpOp;
-    CompInfo.R := GetDecompilerRegisterName(_reg2Idx);
-    if (_item2.Value <> '') and not SameText(_item2.Value, CompInfo.R) then
-      CompInfo.R := CompInfo.R + 'Begin' + _item2.Value + 'End;';
+    CompInfo.R := GetDecompilerRegisterName(reg2Idx);
+    if (item2.Value <> '') and not SameText(item2.Value, CompInfo.R) then
+      CompInfo.R := CompInfo.R + 'Begin' + item2.Value + 'End;';
     Exit;
   End
   else if Op = OP_TEST then
   begin
-    if _reg1Idx = _reg2Idx then
+    if reg1Idx = reg2Idx then
     Begin
       //GetRegItem(_reg1Idx, &_item);
-      CompInfo.L := GetDecompilerRegisterName(_reg1Idx);
-      if (_item1.Value <> '') and not SameText(_item1.Value, CompInfo.L) then
-        CompInfo.L := CompInfo.L + 'Begin' + _item1.Value + 'End;';
+      CompInfo.L := GetDecompilerRegisterName(reg1Idx);
+      if (item1.Value <> '') and not SameText(item1.Value, CompInfo.L) then
+        CompInfo.L := CompInfo.L + 'Begin' + item1.Value + 'End;';
       CompInfo.O := CmpOp;
-      CompInfo.R := GetImmString(_item1._Type, 0);
+      CompInfo.R := GetImmString(item1._Type, 0);
       Exit;
     End
     else
     Begin
-      CompInfo.L := GetDecompilerRegisterName(_reg1Idx) + ' And ' + GetDecompilerRegisterName(_reg2Idx);
+      CompInfo.L := GetDecompilerRegisterName(reg1Idx) + ' And ' + GetDecompilerRegisterName(reg2Idx);
       CompInfo.O := CmpOp;
       CompInfo.R := '0';
       Exit;
@@ -5197,63 +5210,63 @@ Begin
   end;
   if Op in [OP_ADD, OP_SUB, OP_OR, OP_XOR] then
   Begin
-    if (Op = OP_XOR) and (_reg1Idx = _reg2Idx) then //xor reg,reg
+    if (Op = OP_XOR) and (reg1Idx = reg2Idx) then //xor reg,reg
     Begin
-      Env.AddToBody(GetDecompilerRegisterName(_reg1Idx) + ' := 0;');
-      InitItem(@_item);
-      _item.Flags := IF_INTVAL;
-      _item.IntValue := 0;
-      SetRegItem(_reg1Idx, _item);
+      Env.AddToBody(GetDecompilerRegisterName(reg1Idx) + ' := 0;');
+      InitItem(@item);
+      item.Flags := [IF_INTVAL];
+      item.IntValue := 0;
+      SetRegItem(reg1Idx, item);
       Exit;
     End;
-    line := GetDecompilerRegisterName(_reg1Idx) + ' := ' + GetDecompilerRegisterName(_reg1Idx) 
-      + _op + GetDecompilerRegisterName(_reg2Idx);
-    comment := GetString(@_item1, PRECEDENCE_ADD) + _op + GetString(@_item2, PRECEDENCE_ADD);
+    line := GetDecompilerRegisterName(reg1Idx) + ' := ' + GetDecompilerRegisterName(reg1Idx) 
+      + _op + GetDecompilerRegisterName(reg2Idx);
+    comment := GetString(@item1, PRECEDENCE_ADD) + _op + GetString(@item2, PRECEDENCE_ADD);
     Env.AddToBody(line + '; //' + comment);
-    InitItem(@_item);
-    _item.Precedence := PRECEDENCE_ADD;
-    _item.Value := GetDecompilerRegisterName(_reg1Idx);
-    SetRegItem(_reg1Idx, _item);
+    InitItem(@item);
+    item.Precedence := PRECEDENCE_ADD;
+    item.Value := GetDecompilerRegisterName(reg1Idx);
+    SetRegItem(reg1Idx, item);
     if Op = OP_SUB then
     Begin
-      CompInfo.L := GetDecompilerRegisterName(_reg1Idx);
+      CompInfo.L := GetDecompilerRegisterName(reg1Idx);
       CompInfo.O := CmpOp;
-      CompInfo.R := GetDecompilerRegisterName(_reg2Idx);
+      CompInfo.R := GetDecompilerRegisterName(reg2Idx);
     End;
     Exit;
   End
   else if Op in [OP_MUL, OP_IMUL, OP_AND, OP_SHR, OP_SHL] then
   Begin
-    line:=line + GetDecompilerRegisterName(_reg1Idx) + ' := ' + GetDecompilerRegisterName(_reg1Idx) + _op + GetDecompilerRegisterName(_reg2Idx);
-    comment := GetString(@_item1, PRECEDENCE_MULT) + _op + GetString(@_item2, PRECEDENCE_MULT);
+    line:=line + GetDecompilerRegisterName(reg1Idx) + ' := ' + GetDecompilerRegisterName(reg1Idx) + _op + GetDecompilerRegisterName(reg2Idx);
+    comment := GetString(@item1, PRECEDENCE_MULT) + _op + GetString(@item2, PRECEDENCE_MULT);
     Env.AddToBody(line + '; //' + comment);
 
-    InitItem(@_item);
-    _item.Precedence := PRECEDENCE_MULT;
-    _item.Value := comment;
-    _item._Type := 'Integer';
-    SetRegItem(_reg1Idx, _item);
+    InitItem(@item);
+    item.Precedence := PRECEDENCE_MULT;
+    item.Value := comment;
+    item._Type := 'Integer';
+    SetRegItem(reg1Idx, item);
     Exit;
   End
   else if (Op = OP_DIV) or (Op = OP_IDIV) then
   Begin
-    line := 'EAX := ' + GetDecompilerRegisterName(_reg1Idx) + ' Div ' + GetDecompilerRegisterName(_reg2Idx);
-    comment := GetString(@_item1, PRECEDENCE_MULT) + ' Div ' + GetString(@_item2, PRECEDENCE_MULT);
+    line := 'EAX := ' + GetDecompilerRegisterName(reg1Idx) + ' Div ' + GetDecompilerRegisterName(reg2Idx);
+    comment := GetString(@item1, PRECEDENCE_MULT) + ' Div ' + GetString(@item2, PRECEDENCE_MULT);
     Env.AddToBody(line + '; //' + comment);
 
-    InitItem(@_item);
-    _item.Precedence := PRECEDENCE_MULT;
-    _item.Value := comment;
-    _item._Type := 'Integer';
-    SetRegItem(16, _item);
-    _item.Value := GetString(@_item1, PRECEDENCE_MULT) + ' Mod ' + GetString(@_item2, PRECEDENCE_MULT);;
-    SetRegItem(18, _item);
+    InitItem(@item);
+    item.Precedence := PRECEDENCE_MULT;
+    item.Value := comment;
+    item._Type := 'Integer';
+    SetRegItem(16, item);
+    item.Value := GetString(@item1, PRECEDENCE_MULT) + ' Mod ' + GetString(@item2, PRECEDENCE_MULT);;
+    SetRegItem(18, item);
     Exit;
   End
   else if Op = OP_XCHG then
   Begin
-    SetRegItem(_reg1Idx, _item2);
-    SetRegItem(_reg2Idx, _item1);
+    SetRegItem(reg1Idx, item2);
+    SetRegItem(reg2Idx, item1);
     Exit;
   End;
   Env.ErrAdr := curAdr;
@@ -5263,16 +5276,16 @@ end;
 Procedure TDecompiler.SimulateInstr2RegMem (curAdr:Integer; Op:Byte);
 var
   _op,_fname,_name,_type,_value,line:AnsiString;
-  _reg1Idx,fOffset,_offset,ap,adr,_size:Integer;
-  itemSrc,itemDst, _item,item1,item2:TItem;
+  reg1Idx,fOffset,offset,ap,adr,size:Integer;
+  itemSrc,itemDst, item,item1,item2:TItem;
   recN,recN1:InfoRec;
 Begin
-  _reg1Idx := DisaInfo.OpRegIdx[0];
-  GetRegItem(_reg1Idx, itemDst);
+  reg1Idx := DisaInfo.OpRegIdx[0];
+  GetRegItem(reg1Idx, itemDst);
   GetMemItem(curAdr, @itemSrc, Op);
-  if ((itemSrc.Flags and IF_VMT_ADR)<>0)or((itemSrc.Flags And IF_EXTERN_VAR)<>0) then
+  if itemSrc.Flags * [IF_VMT_ADR, IF_EXTERN_VAR] <> [] then
   Begin
-    SetRegItem(_reg1Idx, itemSrc);
+    SetRegItem(reg1Idx, itemSrc);
     Exit;
   End;
   _op := '?';
@@ -5286,32 +5299,32 @@ Begin
     OP_AND: _op := ' And ';
     OP_XOR: _op := ' Xor ';
   End;
-  if (itemSrc.Flags and IF_STACK_PTR)<>0 then
+  if IF_STACK_PTR in itemSrc.Flags then
   Begin
-    _item := Env.Stack[itemSrc.IntValue];
+    item := Env.Stack[itemSrc.IntValue];
     if Op = OP_MOV then
     Begin
       //Arg
-      if (_item.Flags and IF_ARG)<>0 then
+      if IF_ARG in item.Flags then
       Begin
-        _item.Flags := _item.Flags and not IF_ARG;
+        Exclude(item.Flags, IF_ARG);
         //_item.Flags := _item.Flags and not IF_VAR;
-        _item.Value := _item.Name;
-        SetRegItem(_reg1Idx, _item);
-        Env.AddToBody(GetDecompilerRegisterName(_reg1Idx) + ' := ' + _item.Value + ';');
+        item.Value := item.Name;
+        SetRegItem(reg1Idx, item);
+        Env.AddToBody(GetDecompilerRegisterName(reg1Idx) + ' := ' + item.Value + ';');
         Exit;
       End
       //Var
-      else if (_item.Flags and IF_VAR)<>0 then
+      else if IF_VAR in item.Flags then
       Begin
         //_item.Flags :=_item.Flags and not IF_VAR;
-        SetRegItem(_reg1Idx, _item);
+        SetRegItem(reg1Idx, item);
         Exit;
       End
       //Field
-      else if (_item.Flags and IF_FIELD)<>0 then
+      else if IF_FIELD in item.Flags then
       Begin
-        fOffset := _item.Offset;
+        fOffset := item.Offset;
         _fname := GetRecordFields(fOffset, Env.Stack[itemSrc.IntValue - fOffset]._Type);
         _name := Env.Stack[itemSrc.IntValue - fOffset].Value;
         if _name = '' then
@@ -5323,37 +5336,37 @@ Begin
           itemDst._Type := ExtractType(_fname);
         End
         else itemDst.Value := _name + '.f' + Val2Str(fOffset);
-        SetRegItem(_reg1Idx, itemDst);
-        Env.AddToBody(GetDecompilerRegisterName(_reg1Idx) + ' := ' + itemDst.Value + ';');
+        SetRegItem(reg1Idx, itemDst);
+        Env.AddToBody(GetDecompilerRegisterName(reg1Idx) + ' := ' + itemDst.Value + ';');
         Exit;
       End;
-      if _item.Name <> '' then _value := _item.Name
+      if item.Name <> '' then _value := item.Name
       else
       Begin
         _value := Env.GetLvarName(itemSrc.IntValue);
-        if _item.Value <> '' then
-          _value:=_value + 'Begin' + _item.Value + 'End;';
+        if item.Value <> '' then
+          _value:=_value + 'Begin' + item.Value + 'End;';
       End;
-      _item.Value := _value;
-      SetRegItem(_reg1Idx, _item);
-      line := GetDecompilerRegisterName(_reg1Idx) + ' := ' + _value + ';';
+      item.Value := _value;
+      SetRegItem(reg1Idx, item);
+      line := GetDecompilerRegisterName(reg1Idx) + ' := ' + _value + ';';
       Env.AddToBody(line);
       Exit;
     End
     else if Op = OP_LEA then
     Begin
-      SetRegItem(_reg1Idx, itemSrc);
+      SetRegItem(reg1Idx, itemSrc);
       Exit;
     End
     else if Op in [OP_ADD, OP_SUB, OP_MUL, OP_IMUL, OP_OR, OP_AND] then
     Begin
       //Field
-      if (_item.Flags and IF_FIELD)<>0 then
+      if IF_FIELD in item.Flags then
       Begin
-        fOffset := _item.Offset;
+        fOffset := item.Offset;
         _fname := GetRecordFields(fOffset, Env.Stack[itemSrc.IntValue - fOffset]._Type);
         _name := Env.Stack[itemSrc.IntValue - fOffset].Value;
-        itemDst.Flags := 0;
+        itemDst.Flags := [];
         itemDst.Precedence := PRECEDENCE_ADD;
         if Pos(':',_fname)<>0 then
         Begin
@@ -5361,26 +5374,26 @@ Begin
           itemDst._Type := ExtractType(_fname);
         End
         else itemDst.Value := itemDst.Value + _op + _name + '.f' + Val2Str(fOffset);
-        SetRegItem(_reg1Idx, itemDst);
-        Env.AddToBody(GetDecompilerRegisterName(_reg1Idx) + ' := ' + itemDst.Value + ';');
+        SetRegItem(reg1Idx, itemDst);
+        Env.AddToBody(GetDecompilerRegisterName(reg1Idx) + ' := ' + itemDst.Value + ';');
         Exit;
       End;
       if itemSrc.Name <> '' then
         _name := itemSrc.Name
       else
         _name := itemSrc.Value;
-      line := GetDecompilerRegisterName(_reg1Idx) + ' := ' + GetDecompilerRegisterName(_reg1Idx) + _op + _name + ';';
-      itemDst.Flags := 0;
+      line := GetDecompilerRegisterName(reg1Idx) + ' := ' + GetDecompilerRegisterName(reg1Idx) + _op + _name + ';';
+      itemDst.Flags := [];
       if (Op = OP_ADD) or (Op = OP_SUB) or (Op = OP_OR) then
         itemDst.Precedence := PRECEDENCE_ADD
       else if (Op = OP_MUL) or (Op = OP_IMUL) or (Op = OP_AND) then
         itemDst.Precedence := PRECEDENCE_MULT;
-      itemDst.Value := GetDecompilerRegisterName(_reg1Idx);
-      SetRegItem(_reg1Idx, itemDst);
+      itemDst.Value := GetDecompilerRegisterName(reg1Idx);
+      SetRegItem(reg1Idx, itemDst);
       Env.AddToBody(line);
       if (Op = OP_OR) or (Op = OP_AND) then
       Begin
-        CompInfo.L := GetDecompilerRegisterName(_reg1Idx);
+        CompInfo.L := GetDecompilerRegisterName(reg1Idx);
         CompInfo.O := CmpOp;
         CompInfo.R := '0';
       End;
@@ -5388,46 +5401,46 @@ Begin
     End
     else if Op = OP_CMP then
     Begin
-      CompInfo.L := GetDecompilerRegisterName(_reg1Idx);
+      CompInfo.L := GetDecompilerRegisterName(reg1Idx);
       if (itemDst.Value <>'') and not SameText(itemDst.Value, CompInfo.L) then
         CompInfo.L := CompInfo.L + 'Begin' + itemDst.Value + 'End;';
       CompInfo.O := CmpOp;
-      if (_item.Flags and IF_ARG)<>0 then
-        CompInfo.R := _item.Name
+      if IF_ARG in item.Flags then
+        CompInfo.R := item.Name
       else
         CompInfo.R := itemSrc.Value;
       Exit;
     End
     else if Op = OP_XCHG then
     Begin
-      SetRegItem(_reg1Idx, _item);
+      SetRegItem(reg1Idx, item);
       Env.Stack[itemSrc.IntValue] := itemDst;
       Exit;
     End;
   End;
-  if (itemSrc.Flags and IF_INTVAL)<>0 then
+  if IF_INTVAL in itemSrc.Flags then
   Begin
-    _offset := itemSrc.IntValue;
+    offset := itemSrc.IntValue;
     if Op in [OP_MOV, OP_ADD, OP_SUB, OP_MUL, OP_IMUL, OP_DIV, OP_IDIV] then
     Begin
       _name := '';
       _type := '';
-      ap := Adr2Pos(_offset);
-      recN := GetInfoRec(_offset);
+      ap := Adr2Pos(offset);
+      recN := GetInfoRec(offset);
       if Assigned(recN) then
       Begin
         //VMT
         if recN.kind = ikVMT then
         Begin
-          InitItem(@_item);
-          _item.Flags := IF_INTVAL;
-          _item.IntValue := _offset;
-          _item.Value := recN.Name;
-          _item._Type := recN.Name;
-          SetRegItem(_reg1Idx, _item);
+          InitItem(@item);
+          item.Flags := [IF_INTVAL];
+          item.IntValue := offset;
+          item.Value := recN.Name;
+          item._Type := recN.Name;
+          SetRegItem(reg1Idx, item);
           Exit;
         End;
-        MakeGvar(recN, _offset, curAdr);
+        MakeGvar(recN, offset, curAdr);
         _name := recN.Name;
         _type := recN._type;
         if ap >= 0 then
@@ -5439,11 +5452,11 @@ Begin
             recN1 := GetInfoRec(adr);
             if Assigned(recN1) then
             Begin
-              MakeGvar(recN1, _offset, curAdr);
-              InitItem(@_item);
-              _item.Value := recN1.Name;
-              _item._Type := '^' + recN1._type;
-              SetRegItem(_reg1Idx, _item);
+              MakeGvar(recN1, offset, curAdr);
+              InitItem(@item);
+              item.Value := recN1.Name;
+              item._Type := '^' + recN1._type;
+              SetRegItem(reg1Idx, item);
             End;
             Exit;
           End;
@@ -5452,35 +5465,35 @@ Begin
       //Just value
       else
       Begin
-        InitItem(@_item);
-        _item.Flags := IF_INTVAL;
-        _item.IntValue := _offset;
-        SetRegItem(_reg1Idx, _item);
-        line := GetDecompilerRegisterName(_reg1Idx) + ' := ' + IntToStr(_offset) + ';';
+        InitItem(@item);
+        item.Flags := [IF_INTVAL];
+        item.IntValue := offset;
+        SetRegItem(reg1Idx, item);
+        line := GetDecompilerRegisterName(reg1Idx) + ' := ' + IntToStr(offset) + ';';
         Env.AddToBody(line);
         Exit;
       End;
       if Op = OP_MOV then
       Begin
-        InitItem(@_item);
-        _item.Value := _name;
-        _item._Type := _type;
-        SetRegItem(_reg1Idx, _item);
-        line := GetDecompilerRegisterName(_reg1Idx) + ' := ' + _name + ';';
+        InitItem(@item);
+        item.Value := _name;
+        item._Type := _type;
+        SetRegItem(reg1Idx, item);
+        line := GetDecompilerRegisterName(reg1Idx) + ' := ' + _name + ';';
         Env.AddToBody(line);
         Exit;
       End
       else if Op in [OP_ADD, OP_SUB, OP_MUL, OP_IMUL] then
       Begin
-        line := GetDecompilerRegisterName(_reg1Idx) + ' := ' + GetDecompilerRegisterName(_reg1Idx) + _op + _name + ';';
+        line := GetDecompilerRegisterName(reg1Idx) + ' := ' + GetDecompilerRegisterName(reg1Idx) + _op + _name + ';';
         Env.AddToBody(line);
         Exit;
       End
       else if (Op = OP_DIV) or (Op = OP_IDIV) then
       Begin
-        line := GetDecompilerRegisterName(16) + ' := ' + GetDecompilerRegisterName(_reg1Idx) + ' Div ' + _name + ';';
+        line := GetDecompilerRegisterName(16) + ' := ' + GetDecompilerRegisterName(reg1Idx) + ' Div ' + _name + ';';
         Env.AddToBody(line);
-        line := GetDecompilerRegisterName(18) + ' := ' + GetDecompilerRegisterName(_reg1Idx) + ' Mod ' + _name + ';';
+        line := GetDecompilerRegisterName(18) + ' := ' + GetDecompilerRegisterName(reg1Idx) + ' Mod ' + _name + ';';
         Env.AddToBody(line);
         Exit;
       End;
@@ -5489,81 +5502,81 @@ Begin
     End
     else if Op = OP_CMP then
     Begin
-      CompInfo.L := GetDecompilerRegisterName(_reg1Idx);
+      CompInfo.L := GetDecompilerRegisterName(reg1Idx);
       if (itemDst.Value <> '') and not SameText(itemDst.Value, CompInfo.L) then
         CompInfo.L := CompInfo.L + 'Begin' + itemDst.Value + 'End;';
       CompInfo.O := CmpOp;
-      recN := GetInfoRec(_offset);
+      recN := GetInfoRec(offset);
       if Assigned(recN) then
         CompInfo.R := recN.Name
       else
-        CompInfo.R := MakeGvarName(_offset);
+        CompInfo.R := MakeGvarName(offset);
       Exit;
     End;
   End;
   if (Op = OP_MOV) or (Op = OP_LEA) then
   Begin
-    InitItem(@_item);
-    _item.Flags := itemSrc.Flags;
-    _item.Value := itemSrc.Value;
-    _item._Type := itemSrc._Type;
+    InitItem(@item);
+    item.Flags := itemSrc.Flags;
+    item.Value := itemSrc.Value;
+    item._Type := itemSrc._Type;
     //if Op = OP_LEA then _item.Type := '^' + _item.Type;
-    SetRegItem(_reg1Idx, _item);
-    line := GetDecompilerRegisterName(_reg1Idx) + ' := ' + _item.Value + ';';
+    SetRegItem(reg1Idx, item);
+    line := GetDecompilerRegisterName(reg1Idx) + ' := ' + item.Value + ';';
     Env.AddToBody(line);
     Exit;
   End
   else if Op = OP_CMP then
   Begin
-    CompInfo.L := GetDecompilerRegisterName(_reg1Idx);
+    CompInfo.L := GetDecompilerRegisterName(reg1Idx);
     if (itemDst.Value <>'') and not SameText(itemDst.Value, CompInfo.L) then
       CompInfo.L := CompInfo.L + 'Begin' + itemDst.Value + 'End;';
     CompInfo.O := CmpOp;
     CompInfo.R := itemSrc.Value;
     Exit;
   End
-  else if (Op = OP_ADD) or (Op = OP_SUB) or (Op = OP_XOR) then
+  else if Op in [OP_ADD, OP_SUB, OP_XOR] then
   Begin
-    InitItem(@_item);
-    _item.Precedence := PRECEDENCE_ADD;
-    _item.Value := GetString(@itemDst, PRECEDENCE_ADD) + _op + GetString(@itemSrc, PRECEDENCE_ADD);
-    _item._Type := itemSrc._Type;
-    SetRegItem(_reg1Idx, _item);
-    line := GetDecompilerRegisterName(_reg1Idx) + ' := ' + GetDecompilerRegisterName(_reg1Idx)
-      + _op + itemSrc.Value + '; //' + _item.Value;
+    InitItem(@item);
+    item.Precedence := PRECEDENCE_ADD;
+    item.Value := GetString(@itemDst, PRECEDENCE_ADD) + _op + GetString(@itemSrc, PRECEDENCE_ADD);
+    item._Type := itemSrc._Type;
+    SetRegItem(reg1Idx, item);
+    line := GetDecompilerRegisterName(reg1Idx) + ' := ' + GetDecompilerRegisterName(reg1Idx)
+      + _op + itemSrc.Value + '; //' + item.Value;
     Env.AddToBody(line);
     Exit;
   End
-  else if (Op = OP_MUL) or (Op = OP_IMUL) or (Op = OP_AND) then
+  else if Op in [OP_MUL, OP_IMUL, OP_AND] then
   Begin
-    InitItem(@_item);
-    _item.Precedence := PRECEDENCE_MULT;
-    _item.Value := GetString(@itemDst, PRECEDENCE_MULT) + _op + GetString(@itemSrc, PRECEDENCE_MULT);
-    _item._Type := itemSrc._Type;
-    SetRegItem(_reg1Idx, _item);
-    line := GetDecompilerRegisterName(_reg1Idx) + ' := ' + GetDecompilerRegisterName(_reg1Idx) 
-      + _op + itemSrc.Value + '; //' + _item.Value;
+    InitItem(@item);
+    item.Precedence := PRECEDENCE_MULT;
+    item.Value := GetString(@itemDst, PRECEDENCE_MULT) + _op + GetString(@itemSrc, PRECEDENCE_MULT);
+    item._Type := itemSrc._Type;
+    SetRegItem(reg1Idx, item);
+    line := GetDecompilerRegisterName(reg1Idx) + ' := ' + GetDecompilerRegisterName(reg1Idx) 
+      + _op + itemSrc.Value + '; //' + item.Value;
     Env.AddToBody(line);
     Exit;
   End
   else if (Op = OP_DIV) or (Op = OP_IDIV) then
   Begin
-    InitItem(@_item);
-    _item.Precedence := PRECEDENCE_MULT;
-    _item.Value := GetString(@itemDst, PRECEDENCE_MULT) + ' Div ' + GetString(@itemSrc, PRECEDENCE_MULT);
-    _item._Type := itemSrc._Type;
-    SetRegItem(16, _item);
+    InitItem(@item);
+    item.Precedence := PRECEDENCE_MULT;
+    item.Value := GetString(@itemDst, PRECEDENCE_MULT) + ' Div ' + GetString(@itemSrc, PRECEDENCE_MULT);
+    item._Type := itemSrc._Type;
+    SetRegItem(16, item);
 
-    InitItem(@_item);
-    _item.Precedence := PRECEDENCE_MULT;
-    _item.Value := GetString(@itemDst, PRECEDENCE_MULT) + ' Mod ' + GetString(@itemSrc, PRECEDENCE_MULT);
+    InitItem(@item);
+    item.Precedence := PRECEDENCE_MULT;
+    item.Value := GetString(@itemDst, PRECEDENCE_MULT) + ' Mod ' + GetString(@itemSrc, PRECEDENCE_MULT);
     itemDst._Type := itemSrc._Type;
-    SetRegItem(18, _item);
+    SetRegItem(18, item);
 
-    line := GetDecompilerRegisterName(16) + ' := ' + GetDecompilerRegisterName(_reg1Idx) + ' Div ' 
+    line := GetDecompilerRegisterName(16) + ' := ' + GetDecompilerRegisterName(reg1Idx) + ' Div ' 
       + itemSrc.Value + '; //' + itemDst.Value + ' Div ' + itemSrc.Value;
     Env.AddToBody(line);
-    line := GetDecompilerRegisterName(18) + ' := ' + GetDecompilerRegisterName(_reg1Idx) + ' Mod ' 
+    line := GetDecompilerRegisterName(18) + ' := ' + GetDecompilerRegisterName(reg1Idx) + ' Mod ' 
       + itemSrc.Value + '; //' + itemDst.Value + ' Div ' + itemSrc.Value;
     Env.AddToBody(line);
     Exit;
@@ -5571,19 +5584,19 @@ Begin
   else if Op = OP_OR then
   Begin
     //Dst - Set
-    if GetTypeKind(itemDst._Type, _size) = ikSet then
+    if GetTypeKind(itemDst._Type, size) = ikSet then
     Begin
       AssignItem(item1, itemDst);
       AssignItem(item2, itemSrc);
     End;
     //Src - Set
-    if GetTypeKind(itemSrc._Type, _size) = ikSet then
+    if GetTypeKind(itemSrc._Type, size) = ikSet then
     Begin
       AssignItem(item1, itemSrc);
       AssignItem(item2, itemDst);
     End;
     line := item1.Value + ' := ' + item1.Value + ' + ';
-    if (item2.Flags and IF_INTVAL)<>0 then
+    if IF_INTVAL in item2.Flags then
     Begin
       if IsValidImageAdr(item2.IntValue) then
         line:=line + GetSetString(item1._Type, Code + Adr2Pos(item2.IntValue))
@@ -5597,7 +5610,7 @@ Begin
   End
   else if Op = OP_XCHG then
   Begin
-    SetRegItem(_reg1Idx, itemSrc);
+    SetRegItem(reg1Idx, itemSrc);
     Env.Stack[itemSrc.IntValue] := itemDst;
     Exit;
   End;
@@ -5615,14 +5628,14 @@ Var
 Begin
   imm := GetImmString(DisaInfo.Immediate);
   GetMemItem(curAdr, @itemDst, Op);
-  if (itemDst.Flags and IF_STACK_PTR)<>0 then
+  if IF_STACK_PTR in itemDst.Flags then
   Begin
     if itemDst.Name <> '' then
       _name := itemDst.Name
     else
       _name := itemDst.Value;
     item := Env.Stack[itemDst.IntValue];
-    if (item.Flags and IF_ARG)<>0 then
+    if IF_ARG in item.Flags then
       _name := item.Value;
     if Op = OP_MOV then
     Begin
@@ -5659,6 +5672,13 @@ Begin
       Env.AddToBody(line);
       Exit;
     End
+    else if Op = OP_OR then
+    begin
+      Env.Stack[itemDst.IntValue].Value := _name;
+      line := _name + ' := ' + _name + ' Or ' + imm + ';';
+      Env.AddToBody(line);
+      Exit;
+    end
     else if Op = OP_XOR then
     Begin
       Env.Stack[itemDst.IntValue].Value := _name;
@@ -5699,7 +5719,7 @@ Begin
     Env.ErrAdr := curAdr;
     raise Exception.Create('Under construction');
   End;
-  if (itemDst.Flags and IF_INTVAL)<>0 then
+  if IF_INTVAL in itemDst.Flags then
   Begin
     if IsValidImageAdr(itemDst.IntValue) then
     Begin
@@ -5808,7 +5828,7 @@ Begin
             else
               line := _name + ' := ' + GetDefaultProcName(DisaInfo.Immediate);
           End;
-          if IsFlagSet(cfProcStart, ap) then
+          if IsFlagSet([cfProcStart], ap) then
             line := _name + ' := ' + GetDefaultProcName(DisaInfo.Immediate);
         End
         else
@@ -5895,19 +5915,19 @@ Begin
   End
   else if itemDst.Name <> '' then
     _name := itemDst.Name;
-  if (itemDst.Flags and IF_STACK_PTR)<>0 then
+  if IF_STACK_PTR in itemDst.Flags then
   Begin
     if Op = OP_MOV then
     Begin
-      if (itemSrc.Flags and IF_CALL_RESULT)<>0 then
+      if IF_CALL_RESULT in itemSrc.Flags then
       Begin
-        itemSrc.Flags := itemSrc.Flags and not IF_CALL_RESULT;
+        Exclude(itemSrc.Flags, IF_CALL_RESULT);
         itemSrc.Value := Env.GetLvarName(itemDst.IntValue);
         SetRegItem(reg2Idx, itemSrc);
       End
       else
       Begin
-        if (itemSrc.Flags and IF_ARG)=0 then
+        if not(IF_ARG in itemSrc.Flags) then
           itemSrc.Name := Env.GetLvarName(itemDst.IntValue);
       End;
       Env.Stack[itemDst.IntValue] := itemSrc;
@@ -5951,7 +5971,7 @@ Begin
       Exit;
     End;
   End;
-  if (itemDst.Flags and IF_INTVAL)<>0 then
+  if IF_INTVAL in itemDst.Flags then
   Begin
     _offset := itemDst.IntValue;
     if Op = OP_MOV then
@@ -6111,7 +6131,7 @@ Begin
   raise Exception.Create('Under construction');
 end;
 
-Function TDecompiler.DecompileTry (fromAdr, flags:Integer; loopInfo:TLoopInfo):Integer;
+function TDecompiler.DecompileTry(fromAdr:Integer; flags:TDecomCset; loopInfo:TLoopInfo): Integer;
 var
   _pos, tpos, pos1, instrLen, skipNum,num,n,m:Integer;
   startTryAdr, endTryAdr, startFinallyAdr, endFinallyAdr, endExceptAdr, adr, endAdr, hAdr:Integer;
@@ -6122,7 +6142,7 @@ Begin
   skipNum := IsTryBegin(fromAdr, startTryAdr) + IsTryBegin0(fromAdr, startTryAdr);
   adr := startTryAdr; 
   _pos := Adr2pos(adr);
-  if IsFlagSet(cfFinally, _pos) then
+  if IsFlagSet([cfFinally], _pos) then
   Begin
     //jmp @HandleFinally
     instrLen := frmDisasm.Disassemble(Code + _pos, adr, Nil, Nil);
@@ -6139,7 +6159,7 @@ Begin
     while true do
     Begin
       Dec(pos1);
-      if IsFlagSet(cfFinally, pos1) then break;
+      if IsFlagSet([cfFinally], pos1) then break;
     End;
     if pos1<>0 then endTryAdr := pos2Adr(pos1);
     if endTryAdr=0 then
@@ -6169,7 +6189,7 @@ Begin
     de.SetDeFlags(DeFlags);
     de.SetStop(endFinallyAdr);
     try
-      endAdr := de.Decompile(startFinallyAdr, CF_FINALLY, loopInfo);
+      endAdr := de.Decompile(startFinallyAdr, [CF_FINALLY], loopInfo);
     except
       on E:Exception do
       Begin
@@ -6181,7 +6201,7 @@ Begin
     de.Free;
     Result:=endAdr;
   End
-  else if IsFlagSet(cfExcept, _pos) then
+  else if IsFlagSet([cfExcept], _pos) then
   Begin
     //Prev jmp
     pos1 := GetNearestUpInstruction(_pos);
@@ -6192,7 +6212,7 @@ Begin
     //Find prev flag cfExcept
     while true do
     Begin
-      if IsFlagSet(cfExcept, pos1) then break;
+      if IsFlagSet([cfExcept], pos1) then break;
       Dec(pos1);
     End;
     if pos1<>0 then endTryAdr := pos2Adr(pos1);
@@ -6208,7 +6228,7 @@ Begin
     de.SetDeFlags(DeFlags);
     de.SetStop(endTryAdr);
     try
-      endAdr := de.Decompile(fromAdr + 14, 0, loopInfo);
+      endAdr := de.Decompile(fromAdr + 14, [], loopInfo);
     except 
       on E:Exception do
       Begin
@@ -6218,7 +6238,7 @@ Begin
     end;
     de.Free;
     //on except
-    if IsFlagSet(cfETable, _pos) then
+    if IsFlagSet([cfETable], _pos) then
     Begin
       Env.AddToBody('except');
       num := PInteger(Code + _pos)^; 
@@ -6258,7 +6278,7 @@ Begin
           de.SetStop(endExceptAdr);
           try
             Env.AddToBody('begin');
-            endAdr := de.Decompile(hAdr, 0, loopInfo);
+            endAdr := de.Decompile(hAdr, [], loopInfo);
             Env.AddToBody('end');
           Except
             on E:Exception do
@@ -6281,7 +6301,7 @@ Begin
       de.SetDeFlags(DeFlags);
       de.SetStop(endExceptAdr);
       try
-        endAdr := de.Decompile(pos2Adr(_pos), CF_EXCEPT, loopInfo);
+        endAdr := de.Decompile(pos2Adr(_pos), [CF_EXCEPT], loopInfo);
       Except
         on E:Exception do
         Begin
@@ -6352,7 +6372,7 @@ Begin
     jTblpos := Adr2pos(jTblAdr);
     for n := 0 to caseNum-1 do
     Begin
-      if IsFlagSet(cfCode or cfLoc, jTblpos) then break;
+      if IsFlagSet([cfCode, cfLoc], jTblpos) then break;
       jAdr := PInteger(Code + jTblpos)^;
       SetStop(jAdr);
       Inc(jTblpos, 4);
@@ -6442,7 +6462,7 @@ Begin
         de.ClearStop(jAdr);
         try
           Env.AddToBody('begin');
-          adr2 := de.Decompile(jAdr, 0, loopInfo);
+          adr2 := de.Decompile(jAdr, [], loopInfo);
           if adr2 > endAdr then endAdr := adr2;
           Env.AddToBody('end');
         Except
@@ -6463,7 +6483,7 @@ Begin
   jTblpos := Adr2pos(jTblAdr);
   for n := 0 to caseNum-1 do
   Begin
-    if IsFlagSet(cfCode or cfLoc, jTblpos) then break;
+    if IsFlagSet([cfCode, cfLoc], jTblpos) then break;
     jAdr := PInteger(Code + jTblpos)^;
     if jAdr <> endOfCaseAdr then
     Begin
@@ -6486,7 +6506,7 @@ Begin
         jTblpos1 := Adr2pos(jTblAdr);
         for m := 0 to caseNum-1 do
         Begin
-          if IsFlagSet(cfCode or cfLoc, jTblpos1) then break;
+          if IsFlagSet([cfCode, cfLoc], jTblpos1) then break;
           jAdr1 := PInteger(Code + jTblpos1)^;
           if jAdr1 = jAdr then
           Begin
@@ -6505,7 +6525,7 @@ Begin
         de.ClearStop(jAdr);
         try
           Env.AddToBody('begin');
-          adr2 := de.Decompile(jAdr, 0, loopInfo);
+          adr2 := de.Decompile(jAdr, [], loopInfo);
           if adr2 > endAdr then endAdr := adr2;
           Env.AddToBody('end');
         Except
@@ -6576,7 +6596,7 @@ var
   _adr,n,r:Integer;
   item, item1, item2, item3, item4:TItem;
   recN:InfoRec;
-  line, _value, value1, value2, _typeName:AnsiString;
+  line, _value, value1, value2, _typeName,_op:AnsiString;
   _int64Val:Int64;
 Begin
   Result:=False;
@@ -6608,7 +6628,7 @@ Begin
   Begin
     //dest:Pointer
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
     Begin
       Env.Stack[item1.IntValue].Value := Env.GetLvarName(item1.IntValue);
       item1 := Env.Stack[item1.IntValue];
@@ -6627,7 +6647,7 @@ Begin
   Begin
     //eax - dst
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
     Begin
       if Env.Stack[item1.IntValue].Value = '' then 
         Env.Stack[item1.IntValue].Value := Env.GetLvarName(item1.IntValue);
@@ -6635,7 +6655,7 @@ Begin
     End;
     //edx - src
     GetRegItem(18, item2);
-    if (item2.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item2.Flags then
     Begin
       if Env.Stack[item2.IntValue].Value = '' then 
         Env.Stack[item2.IntValue].Value := Env.GetLvarName(item2.IntValue);
@@ -6649,7 +6669,7 @@ Begin
   Begin
     //eax - var
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
     Begin
       if Env.Stack[item1.IntValue].Value = '' then 
         Env.Stack[item1.IntValue].Value := Env.GetLvarName(item1.IntValue);
@@ -6663,7 +6683,7 @@ Begin
   Begin
     //eax - ptr
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
     Begin
       if Env.Stack[item1.IntValue].Value = '' then 
         Env.Stack[item1.IntValue].Value := Env.GetLvarName(item1.IntValue);
@@ -6673,7 +6693,7 @@ Begin
     line := 'EAX := ' + _value;
     Env.AddToBody(line);
     InitItem(@item);
-    item.Flags := item.Flags or IF_CALL_RESULT;
+    Include(item.Flags, IF_CALL_RESULT);
     item.Value := _value;
     item._Type := 'Integer';
     SetRegItem(16, item);
@@ -6684,7 +6704,7 @@ Begin
     //eax - dst
     GetRegItem(16, item1);
     item := item1;
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
     Begin
       if Env.Stack[item1.IntValue].Value = '' then 
         Env.Stack[item1.IntValue].Value := Env.GetLvarName(item1.IntValue);
@@ -6702,7 +6722,7 @@ Begin
     Begin
       line:=line + ', ';
       item := Env.Stack[_esp];
-      if (item.Flags and IF_INTVAL)<>0 then
+      if IF_INTVAL in item.Flags then
         line:=line + IntToStr(item.IntValue)
       else
         line:=line + item.Value;
@@ -6729,7 +6749,7 @@ Begin
     _value := 'GetMem(';
     //eax-Bytes
     GetRegItem(16, item);
-    if (item.Flags and IF_INTVAL)<>0 then
+    if IF_INTVAL in item.Flags then
       _value:=_value + IntToStr(item.IntValue)
     else
       _value:=_value + item.Value;
@@ -6743,7 +6763,7 @@ Begin
       raise Exception.Create('Empty input - See you later!');
     End;
     InitItem(@item);
-    item.Flags := item.Flags or IF_CALL_RESULT;
+    Include(item.Flags, IF_CALL_RESULT);
     item.Value := _value;
     item._Type := _typeName;
     SetRegItem(16, item);
@@ -6763,7 +6783,7 @@ Begin
     GetRegItem(16, item1);
     //edx - TypeInfo
     GetRegItem(18, item2);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
     Begin
       _typeName := GetTypeName(item2.IntValue);
       _size := GetRecordSize(_typeName);
@@ -6775,7 +6795,7 @@ Begin
           raise Exception.Create('Possibly incorrect RecordSize (or incorrect type of record)');
         End;
         item := Env.Stack[item1.IntValue + r];
-        item.Flags := IF_FIELD;
+        item.Flags := [IF_FIELD];
         item.Offset := r;
         item._Type := '';
         if r = 0 then item._Type := _typeName;
@@ -6793,7 +6813,7 @@ Begin
     //eax - dst
     GetRegItem(16, item1);
     item := item1;
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
     Begin
       if Env.Stack[item1.IntValue].Value = '' then
         Env.Stack[item1.IntValue].Value := Env.GetLvarName(item1.IntValue);
@@ -6810,7 +6830,7 @@ Begin
   else if SameText(name, '@IntfClear') then
   Begin
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
       Env.Stack[item1.IntValue]._Type := 'IInterface';
     line := item1.Value + ' := Nil;';
     Env.AddToBody(line);
@@ -6875,9 +6895,9 @@ Begin
     //eax - dst
     GetRegItem(16, item);
     line := GetStringArgument(@item) + ' := ';
-    if (item.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item.Flags then
     Begin
-      Env.Stack[item.IntValue].Flags := 0;
+      Env.Stack[item.IntValue].Flags := [];
       Env.Stack[item.IntValue].Value := Env.GetLvarName(item.IntValue);
       if name[2] = 'L' then
         Env.Stack[item.IntValue]._Type := 'AnsiString'
@@ -6920,15 +6940,15 @@ Begin
     GetCmpInfo(procAdr + instrLen);
     CompInfo.O := 'F'; //By default (<>)
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then item1 := Env.Stack[item1.IntValue];
+    if IF_STACK_PTR in item1.Flags then item1 := Env.Stack[item1.IntValue];
     CompInfo.L := item1.Value;
     GetRegItem(18, item2);
-    if (item2.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item2.Flags then
     Begin
       item2 := Env.Stack[item2.IntValue];
       CompInfo.R := item2.Value;
     End
-    else if (item2.Flags and IF_INTVAL)<>0 then
+    else if IF_INTVAL in item2.Flags then
     Begin
       if item2.IntValue=0 then CompInfo.R := ''''
       else
@@ -6954,11 +6974,11 @@ Begin
   Begin
     //eax - dst
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
       Env.Stack[item1.IntValue]._Type := 'String';
     //edx - src
     GetRegItem(18, item2);
-    if (item2.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item2.Flags then
     Begin
       case name[10] of
         'A': _typeName := 'PAnsiChar';
@@ -6978,7 +6998,7 @@ Begin
   Begin
     //eax - src
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
       Env.Stack[item1.IntValue]._Type := 'String';
     item1.Value := 'PChar(' + item1.Value + ')';
     SetRegItem(16, item1);
@@ -6990,11 +7010,11 @@ Begin
   Begin
     //eax - dst
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
       Env.Stack[item1.IntValue]._Type := 'ShortString';
     //edx - src
     GetRegItem(18, item2);
-    if (item2.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item2.Flags then
       Env.Stack[item2.IntValue]._Type := 'String';
     line := item1.Value + ' := ' + item2.Value + ';';
     Env.AddToBody(line);
@@ -7006,11 +7026,11 @@ Begin
   Begin
     //eax - dst
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
       Env.Stack[item1.IntValue]._Type := 'ShortString';
     //edx - src
     GetRegItem(18, item2);
-    if (item2.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item2.Flags then
       Env.Stack[item2.IntValue]._Type := 'ShortString';
     line := item1.Value + ' := ';
     if SameText(name, '@PStrNCat') then line:=line + item1.Value + ' + ';
@@ -7031,7 +7051,7 @@ Begin
   Begin
     //File
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then 
+    if IF_STACK_PTR in item1.Flags then
       item1 := Env.Stack[item1.IntValue];
     line := 'Rewrite(' + ExtractClassName(item1.Value) + ');';
     Env.AddToBody(line);
@@ -7069,7 +7089,7 @@ Begin
     item.Value := 'EAX';
     item._Type := 'String';
     SetRegItem(16, item);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
     Begin
       _value := 'UniqueString(' + Env.Stack[item1.IntValue].Value + ')';
       Env.Stack[item1.IntValue]._Type := 'String';
@@ -7086,11 +7106,11 @@ Begin
   Begin
     //eax-Dst
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
       Env.Stack[item1.IntValue]._Type := 'UnicodeString';
     //edx-Src
     GetRegItem(18, item2);
-    if (item2.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item2.Flags then
       Env.Stack[item2.IntValue]._Type := 'WideChar';
     line := item1.Value + ' := ' + item2.Value;
     Env.AddToBody(line);
@@ -7100,11 +7120,11 @@ Begin
   Begin
     //eax-Dst
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
       Env.Stack[item1.IntValue]._Type := 'UnicodeString';
     //edx-Src
     GetRegItem(18, item2);
-    if (item2.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item2.Flags then
       Env.Stack[item2.IntValue]._Type := 'AnsiString';
     line := item1.Value + ' := ' + item2.Value;
     Env.AddToBody(line);
@@ -7114,11 +7134,11 @@ Begin
   Begin
     //eax - dst
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
       Env.Stack[item1.IntValue]._Type := 'UnicodeString';
     //edx - src
     GetRegItem(18, item2);
-    if (item2.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item2.Flags then
       Env.Stack[item2.IntValue]._Type := 'ShortString';
     line := item1.Value + ' := ' + item2.Value + ';';
     Env.AddToBody(line);
@@ -7128,11 +7148,11 @@ Begin
   Begin
     //eax-Dst
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
       Env.Stack[item1.IntValue]._Type := 'UnicodeString';
     //edx-Src
     GetRegItem(18, item2);
-    if (item2.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item2.Flags then
       Env.Stack[item2.IntValue]._Type := 'WideString';
     line := item1.Value + ' := ' + item2.Value;
     Env.AddToBody(line);
@@ -7142,11 +7162,11 @@ Begin
   Begin
     //eax - Dst
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
       Env.Stack[item1.IntValue]._Type := 'UnicodeString';
     //edx-Src
     GetRegItem(18, item2);
-    if (item2.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item2.Flags then
       Env.Stack[item2.IntValue]._Type := 'PWideChar';
     line := item1.Value + ' := ' + item2.Value;
     Env.AddToBody(line);
@@ -7156,7 +7176,7 @@ Begin
   begin
     //eax - src
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
       Env.Stack[item1.IntValue]._Type := 'WideString';
     item1.Value := 'PWideChar(' + item1.Value + ')';
     item1._Type := 'PWideChar';
@@ -7169,7 +7189,7 @@ Begin
   Begin
     //eax - src
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
       Env.Stack[item1.IntValue]._Type := 'UnicodeString';
     item1.Value := 'PWideChar(' + item1.Value + ')';
     item1._Type := 'PWideChar';
@@ -7182,11 +7202,11 @@ Begin
   Begin
     //eax - dst
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
       Env.Stack[item1.IntValue]._Type := 'UnicodeString';
     //edx - src
     GetRegItem(18, item2);
-    if (item2.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item2.Flags then
       Env.Stack[item2.IntValue]._Type := 'String';
     line := item1.Value + ' := ' + item2.Value + ';';
     Env.AddToBody(line);
@@ -7195,23 +7215,90 @@ Begin
   else if SameText(name, '@VarClear') then
   begin
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
       Env.Stack[item1.IntValue]._Type := 'Variant';
     line := item1.Value + ' := 0;';
     Env.AddToBody(line);
     Exit;
   end
-  else if SameText(name, '@VarAdd') then
+  else if SameText(name, '@VarAdd') or
+    SameText(name, '@VarSub') or
+    SameText(name, '@VarMul') or
+    SameText(name, '@VarDiv') or
+    SameText(name, '@VarMod') or
+    SameText(name, '@VarAnd') or
+    SameText(name, '@VarOr')  or
+    SameText(name, '@VarXor') or
+    SameText(name, '@VarShl') or
+    SameText(name, '@VarShr') or
+    SameText(name, '@VarRDiv') then
   begin
-    //eax=eax+edx
+    _op := Copy(name,5, Length(name));
     GetRegItem(16, item1);
     GetRegItem(18, item2);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
+    begin
       Env.Stack[item1.IntValue]._Type := 'Variant';
-    if (item2.Flags and IF_STACK_PTR)<>0 then
+      item1 := Env.Stack[item1.IntValue];
+    end;
+    if IF_STACK_PTR in item2.Flags then
+    begin
       Env.Stack[item2.IntValue]._Type := 'Variant';
-    line := item1.Value + ' := ' + item1.Value + ' + ' + item2.Value + ';';
+      item2 := Env.Stack[item2.IntValue];
+    end;
+    line := item1.Name + ' := ' + item1.Name + ' ' + _op + ' ' + item2.Name + ';';
     Env.AddToBody(line);
+    Exit;
+  end
+  else if SameText(name, '@VarNeg') or SameText(name, '@VarNot') then
+  begin
+    _op := Copy(name,5, Length(name));
+    GetRegItem(16, item1);
+    if IF_STACK_PTR in item1.Flags then
+    begin
+      Env.Stack[item1.IntValue]._Type := 'Variant';
+      item1 := Env.Stack[item1.IntValue];
+    end;
+    line := item1.Name + ' := ' + _op + ' ' + item1.Name + ';';
+    Env.AddToBody(line);
+    Exit;
+  end
+  else if SameText(Copy(name,1, 7), '@VarCmp') then
+  begin
+    GetCmpInfo(procAdr + instrLen);
+    if (name[8] = 'E') and (name[9] = 'Q') then
+      CompInfo.O := 'E' //JZ
+    else if (name[8] = 'N') and (name[9] = 'E') then
+      CompInfo.O := 'F' //JNZ
+    else if name[8] = 'L' then
+    begin
+      if name[9] = 'E' then
+        CompInfo.O := 'O' //JLE
+      else if name[9] = 'T' then
+        CompInfo.O := 'M'; //JL
+    end
+    else if name[8] = 'G' then
+    begin
+      if name[9] = 'E' then
+        CompInfo.O := 'N' //JGE
+      else if name[9] = 'T' then
+        CompInfo.O := 'P'; //JG
+    end;
+    GetRegItem(16, item1); //eax - Left argument
+    if IF_STACK_PTR in item1.Flags then
+    begin
+      Env.Stack[item1.IntValue]._Type := 'Variant';
+      item1 := Env.Stack[item1.IntValue];
+    end;
+    CompInfo.L := item1.Name;
+    GetRegItem(18, item2); //edx - Right argument
+    if IF_STACK_PTR in item2.Flags then
+    begin
+      Env.Stack[item2.IntValue]._Type := 'Variant';
+      item2 := Env.Stack[item2.IntValue];
+    end;
+    CompInfo.R := item2.Name;
+    Result:=true;
     Exit;
   end
   //Cast to Variant
@@ -7224,19 +7311,48 @@ Begin
     SameText(name, '@VarFromDisp') then
   Begin
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
+    begin
       Env.Stack[item1.IntValue]._Type := 'Variant';
+      item1 := Env.Stack[item1.IntValue];
+    end;
     GetRegItem(18, item2);
-    line := item1.Value + ' := Variant(' + item2.Value + ');';
+    line := item1.Name + ' := Variant(' + item2.Name + ');';
     Env.AddToBody(line);
     Exit;
   End
-  else if SameText(name, '@VarFromTDateTime') then
+  else if SameText(name, '@VarFromTDateTime') or SameText(name, '@VarFromCurr') then
   Begin
     GetRegItem(16, item1);
-    line := Env.GetLvarName(item1.IntValue) + ' := Variant(' + FGet(0).Value + ')';
+    if IF_STACK_PTR in item1.Flags then
+    begin
+      Env.Stack[item1.IntValue]._Type := 'Variant';
+      item1 := Env.Stack[item1.IntValue];
+    end;
+    line:=item1.Name + ' := Variant(' + FPop.Value + ')';
     Env.AddToBody(line);
-    FPop;
+    Exit;
+  end
+  else if SameText(name, '@VarFromReal') then
+  begin
+    GetRegItem(16, item1);
+    if IF_STACK_PTR in item1.Flags then
+      line := Env.GetLvarName(item1.IntValue);
+    line:=line + ' := Variant(' + FPop.Value + ')';
+    Env.AddToBody(line);
+    Exit;
+  end
+  else if SameText(name, '@VarToInt') then
+  begin
+    //eax=Variant, return Integer
+    GetRegItem(16, item1);
+    if IF_STACK_PTR in item1.Flags then
+      Env.Stack[item1.IntValue]._Type := 'Variant';
+    InitItem(@item);
+    item.Value := 'Integer(' + Env.GetLvarName(item1.IntValue) + ')';
+    SetRegItem(16, item);
+    line := 'EAX := ' + item.Value + ';';
+    Env.AddToBody(line);
     Exit;
   End
   else if SameText(name, '@VarToInteger') then
@@ -7244,7 +7360,7 @@ Begin
     //edx=Variant, eax=Integer
     GetRegItem(18, item1);
     GetRegItem(16, item2);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
       Env.Stack[item1.IntValue]._Type := 'Variant';
     InitItem(@item);
     item.Value := 'Integer(' + item1.Value + ')';
@@ -7258,7 +7374,7 @@ Begin
     //edx=Variant, eax=String
     GetRegItem(18, item1);
     GetRegItem(16, item2);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
       Env.Stack[item1.IntValue]._Type := 'Variant';
     InitItem(@item);
     item.Value := 'String(' + item1.Value + ')';
@@ -7271,7 +7387,7 @@ Begin
   Begin
     //File
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then item1 := Env.Stack[item1.IntValue];
+    if IF_STACK_PTR in item1.Flags then item1 := Env.Stack[item1.IntValue];
     //Value (Extended)
     GetFloatItemFromStack(_ESP_, @item2, FT_EXTENDED);
     Inc(_ESP_, 12);
@@ -7299,7 +7415,7 @@ Begin
   Begin
     //File
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then item1 := Env.Stack[item1.IntValue];
+    if IF_STACK_PTR in item1.Flags then item1 := Env.Stack[item1.IntValue];
     //Value (Extended)
     GetFloatItemFromStack(_ESP_, @item2, FT_EXTENDED); 
     Inc(_ESP_, 12);
@@ -7319,11 +7435,11 @@ Begin
   Begin
     //File
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then item1 := Env.Stack[item1.IntValue];
+    if IF_STACK_PTR in item1.Flags then item1 := Env.Stack[item1.IntValue];
     line := 'Write(' + ExtractClassName(item1.Value) + ', ';
     //edx
     GetRegItem(18, item2);
-    if (item2.Flags and IF_INTVAL)<>0 then
+    if IF_INTVAL in item2.Flags then
       line:=line + GetImmString(item2.IntValue)
     else
       line:=line + item2.Value;
@@ -7336,10 +7452,10 @@ Begin
   Begin
     //File
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then item1 := Env.Stack[item1.IntValue];
+    if IF_STACK_PTR in item1.Flags then item1 := Env.Stack[item1.IntValue];
     //edx
     GetRegItem(18, item2);
-    if (item2.Flags and IF_STACK_PTR)<>0 then item2 := Env.Stack[item2.IntValue];
+    if IF_STACK_PTR in item2.Flags then item2 := Env.Stack[item2.IntValue];
     line := 'Write(' + ExtractClassName(item1.Value) + ', ' + item2.Value + ');';
     Env.AddToBody(line);
     Exit;
@@ -7349,7 +7465,7 @@ Begin
   Begin
     //eax-Dst
     GetRegItem(16, item1);
-    if (item1.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item1.Flags then
     Begin
       item := Env.Stack[item1.IntValue];
       item.Value := Env.GetLvarName(item1.IntValue);
@@ -7359,7 +7475,7 @@ Begin
     End;
     //edx-Src
     GetRegItem(18, item2);
-    if (item2.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in item2.Flags then
     Begin
       item2 := Env.Stack[item2.IntValue];
       if SameText(name, '@WStrFromUStr') then
@@ -7377,12 +7493,12 @@ Begin
     //Argument (Int64) in edx:eax
     GetRegItem(16, item1);
     GetRegItem(18, item2);
-    if (item1.Flags and IF_INTVAL)<>0 then
+    if IF_INTVAL in item1.Flags then
     Begin
       _int64Val := (item2.IntValue shl 32) or item1.IntValue;
       value1 := IntToStr(_int64Val);
     End
-    else if (item1.Flags and IF_STACK_PTR)<>0 then
+    else if IF_STACK_PTR in item1.Flags then
     Begin
       item1 := Env.Stack[item1.IntValue];
       value1 := item1.Value;
@@ -7393,12 +7509,12 @@ Begin
     Inc(_ESP_, 4);
     item4 := Env.Stack[_ESP_]; 
     Inc(_ESP_, 4);
-    if (item3.Flags and IF_INTVAL)<>0 then
+    if IF_INTVAL in item3.Flags then
     Begin
       _int64Val := (item4.IntValue shl 32) or item3.IntValue;
       value2 := IntToStr(_int64Val);
     End
-    else if (item3.Flags and IF_STACK_PTR)<>0 then
+    else if IF_STACK_PTR in item3.Flags then
     Begin
       item3 := Env.Stack[item3.IntValue];
       value2 := item3.Value;
@@ -7419,12 +7535,12 @@ Begin
     //Argument (Int64) in edx:eax
     GetRegItem(16, item1);
     GetRegItem(18, item2);
-    if (item1.Flags and IF_INTVAL)<>0 then
+    if IF_INTVAL in item1.Flags then
     Begin
       _int64Val := (item2.IntValue shl 32) or item1.IntValue;
       value1 := IntToStr(_int64Val);
     End
-    else if (item1.Flags and IF_STACK_PTR)<>0 then
+    else if IF_STACK_PTR in item1.Flags then
     Begin
       item1 := Env.Stack[item1.IntValue];
       value1 := item1.Value;
@@ -7435,12 +7551,12 @@ Begin
     Inc(_ESP_, 4);
     item4 := Env.Stack[_ESP_]; 
     Inc(_ESP_, 4);
-    if (item3.Flags and IF_INTVAL)<>0 then
+    if IF_INTVAL in item3.Flags then
     Begin
       _int64Val := (item4.IntValue shl 32) or item3.IntValue;
       value2 := IntToStr(_int64Val);
     End
-    else if (item3.Flags and IF_STACK_PTR)<>0 then
+    else if IF_STACK_PTR in item3.Flags then
     Begin
       item3 := Env.Stack[item3.IntValue];
       value2 := item3.Value;
@@ -7460,12 +7576,12 @@ Begin
     //Argument (Int64) in edx:eax
     GetRegItem(16, item1);
     GetRegItem(18, item2);
-    if (item1.Flags and IF_INTVAL)<>0 then
+    if IF_INTVAL in item1.Flags then
     Begin
       _int64Val := (item2.IntValue shl 32) or item1.IntValue;
       value1 := IntToStr(_int64Val);
     End
-    else if (item1.Flags and IF_STACK_PTR)<>0 then
+    else if IF_STACK_PTR in item1.Flags then
     Begin
       item1 := Env.Stack[item1.IntValue];
       value1 := item1.Value;
@@ -7476,12 +7592,12 @@ Begin
     Inc(_ESP_, 4);
     item4 := Env.Stack[_ESP_]; 
     Inc(_ESP_, 4);
-    if (item3.Flags and IF_INTVAL)<>0 then
+    if IF_INTVAL in item3.Flags then
     Begin
       _int64Val := (item4.IntValue shl 32) or item3.IntValue;
       value2 := IntToStr(_int64Val);
     End
-    else if (item3.Flags and IF_STACK_PTR)<>0 then
+    else if IF_STACK_PTR in item3.Flags then
     Begin
       item3 := Env.Stack[item3.IntValue];
       value2 := item3.Value;
@@ -7566,7 +7682,7 @@ Begin
     if DisaInfo.OpType[0] = otMEM then
     Begin
       GetMemItem(curAdr, @itemSrc, 0);
-      if (itemSrc.Flags and IF_STACK_PTR)<>0 then
+      if IF_STACK_PTR in itemSrc.Flags then
       Begin
         _item := Env.Stack[itemSrc.IntValue];
         if _item.Value = '' then
@@ -7580,7 +7696,7 @@ Begin
         FPush(@_item);
         Exit;
       End;
-      if (itemSrc.Flags and IF_INTVAL)<>0 then
+      if IF_INTVAL in itemSrc.Flags then
       Begin
         recN := GetInfoRec(itemSrc.IntValue);
         if Assigned(recN) and recN.HasName then
@@ -7611,7 +7727,7 @@ Begin
     if DisaInfo.OpType[0] = otMEM then
     Begin
       GetMemItem(curAdr, @itemSrc, 0);
-      if (itemSrc.Flags and IF_STACK_PTR)<>0 then
+      if IF_STACK_PTR in itemSrc.Flags then
       Begin
         _item := Env.FStack[_TOP_];
         if pop1 then FPop;
@@ -7632,7 +7748,7 @@ Begin
         End;
         Exit;
       End;
-      if (itemSrc.Flags and IF_INTVAL)<>0 then
+      if IF_INTVAL in itemSrc.Flags then
       Begin
         recN := GetInfoRec(itemSrc.IntValue);
         if Assigned(recN) and recN.HasName then
@@ -7654,13 +7770,8 @@ Begin
       Env.AddToBody(line);
       Exit;
     End;
-    //op st - do nothing
-    if DisaInfo.OpType[0] = otFST then
-    Begin
-      line := '// !!! - unknown situation';
-      Env.AddToBody(line);
-      Exit;
-    End;
+    //fstp - do nothing
+    if DisaInfo.OpType[0] = otFST then Exit;
   End;
   //fcom, fcomp, fcompp
   _pos := Pos('fcom',DisaInfo.Mnem);
@@ -7686,7 +7797,7 @@ Begin
       if DisaInfo.OpType[0] = otMEM then
       Begin
         GetMemItem(curAdr, @itemSrc, 0);
-        if (itemSrc.Flags and IF_STACK_PTR)<>0 then
+        if IF_STACK_PTR in itemSrc.Flags then
         Begin
           CompInfo.L := FGet(0).Value;
           CompInfo.O := CmpOp;
@@ -7703,7 +7814,7 @@ Begin
           End;
           Exit;
         End;
-        if (itemSrc.Flags and IF_INTVAL)<>0 then
+        if IF_INTVAL in itemSrc.Flags then
         Begin
           recN := GetInfoRec(itemSrc.IntValue);
           if Assigned(recN) and recN.HasName then
@@ -7755,7 +7866,7 @@ Begin
       if DisaInfo.OpType[0] = otMEM then
       Begin
         GetMemItem(curAdr, @itemSrc, 0);
-        if (itemSrc.Flags and IF_STACK_PTR)<>0 then
+        if IF_STACK_PTR in itemSrc.Flags then
         Begin
           _item := Env.Stack[itemSrc.IntValue];
           if _item.Value <> '' then
@@ -7769,7 +7880,7 @@ Begin
           FSet(0, @_item);
           Exit;
         End;
-        if (itemSrc.Flags and IF_INTVAL)<>0 then
+        if  IF_INTVAL in itemSrc.Flags then
         Begin
           recN := GetInfoRec(itemSrc.IntValue);
           if Assigned(recN) and recN.HasName then
@@ -7836,7 +7947,7 @@ Begin
       if DisaInfo.OpType[0] = otMEM then
       Begin
         GetMemItem(curAdr, @itemSrc, 0);
-        if (itemSrc.Flags and IF_STACK_PTR)<>0 then
+        if IF_STACK_PTR in itemSrc.Flags then
         Begin
           _item := Env.Stack[itemSrc.IntValue];
           if _item.Value <> '' then
@@ -7853,7 +7964,7 @@ Begin
           FSet(0, @_item);
           Exit;
         End;
-        if (itemSrc.Flags and IF_INTVAL)<>0 then
+        if  IF_INTVAL in itemSrc.Flags then
         Begin
           recN := GetInfoRec(itemSrc.IntValue);
           if Assigned(recN) and recN.HasName then
@@ -7921,7 +8032,7 @@ Begin
       if DisaInfo.OpType[0] = otMEM then
       Begin
         GetMemItem(curAdr, @itemSrc, 0);
-        if (itemSrc.Flags and IF_STACK_PTR)<>0 then
+        if IF_STACK_PTR in itemSrc.Flags then
         Begin
           _item := Env.Stack[itemSrc.IntValue];
           if _item.Value <> '' then
@@ -7935,7 +8046,7 @@ Begin
           FSet(0, @_item);
           Exit;
         End;
-        if (itemSrc.Flags and IF_INTVAL)<>0 then
+        if  IF_INTVAL in itemSrc.Flags then
         Begin
           recN := GetInfoRec(itemSrc.IntValue);
           if Assigned(recN) and recN.HasName then
@@ -8005,7 +8116,7 @@ Begin
       if DisaInfo.OpType[0] = otMEM then
       Begin
         GetMemItem(curAdr, @itemSrc, 0);
-        if (itemSrc.Flags and IF_STACK_PTR)<>0 then
+        if IF_STACK_PTR in itemSrc.Flags then
         Begin
           _item := Env.Stack[itemSrc.IntValue];
           if _item.Value <> '' then
@@ -8022,7 +8133,7 @@ Begin
           FSet(0, @_item);
           Exit;
         End;
-        if (itemSrc.Flags and IF_INTVAL)<>0 then
+        if  IF_INTVAL in itemSrc.Flags then
         Begin
           recN := GetInfoRec(itemSrc.IntValue);
           if Assigned(recN) and recN.HasName then
@@ -8265,7 +8376,7 @@ Begin
     len := frmDisasm.Disassemble(Code + curPos, curAdr, @_disInfo, Nil);
     dd:=_disInfo.Mnem;
     //Switch at current address
-    if IsFlagSet(cfSwitch, curPos) then
+    if IsFlagSet([cfSwitch], curPos) then
     Begin
       de := TDecompiler.Create(Env);
       begAdr := curAdr;
@@ -8290,7 +8401,7 @@ Begin
       Exit;
     End
     //Switch at next address
-    else if IsFlagSet(cfSwitch, curPos + len) then
+    else if IsFlagSet([cfSwitch], curPos + len) then
     Begin
       _N := _disInfo.Immediate;
       //add or sub
@@ -8345,7 +8456,7 @@ Begin
           de.ClearStop(begAdr);
           try
             Env.AddToBody('begin');
-            adr := de.Decompile(begAdr, 0, loopInfo);
+            adr := de.Decompile(begAdr, [], loopInfo);
             if adr > endAdr then endAdr := adr;
             Env.AddToBody('end');
           Except
@@ -8392,7 +8503,7 @@ Begin
         de.ClearStop(begAdr);
         try
           Env.AddToBody('begin');
-          adr := de.Decompile(begAdr, 0, loopInfo);
+          adr := de.Decompile(begAdr, [], loopInfo);
           if adr > endAdr then endAdr := adr;
           Env.AddToBody('end');
         Except
@@ -8420,7 +8531,7 @@ Begin
           de.ClearStop(begAdr);
           try
             Env.AddToBody('begin');
-            adr := de.Decompile(begAdr, 0, loopInfo);
+            adr := de.Decompile(begAdr, [], loopInfo);
             if adr > endAdr then endAdr := adr;
             Env.AddToBody('end');
           Except
@@ -8449,7 +8560,7 @@ Begin
         de.ClearStop(begAdr);
         try
           Env.AddToBody('begin');
-          adr := de.Decompile(begAdr, 0, loopInfo);
+          adr := de.Decompile(begAdr, [], loopInfo);
           if adr > endAdr then endAdr := adr;
           Env.AddToBody('end');
         Except
@@ -8476,7 +8587,7 @@ Begin
         de.MarkGeneralCase(markAdr);
         try
           Env.AddToBody('begin');
-          adr := de.Decompile(begAdr, 0, loopInfo);
+          adr := de.Decompile(begAdr, [], loopInfo);
           if adr > endAdr then endAdr := adr;
           Env.AddToBody('end');
         Except
@@ -8520,7 +8631,7 @@ Begin
         de.ClearStop(begAdr);
         try
           Env.AddToBody('begin');
-          adr := de.Decompile(begAdr, 0, loopInfo);
+          adr := de.Decompile(begAdr, [], loopInfo);
           if adr > endAdr then endAdr := adr;
           Env.AddToBody('end');
         Except
@@ -8555,14 +8666,14 @@ Begin
     len := frmDisasm.Disassemble(Code + curPos, curAdr, @_disInfo, Nil);
     dd := _disInfo.Mnem;
     //Switch at current address
-    if IsFlagSet(cfSwitch, curPos) then
+    if IsFlagSet([cfSwitch], curPos) then
     Begin
       //frmDisasm.Disassemble(Code + _curPos + _len, _curAdr + _len, @_disInfo, Nil); //ja
       MarkCaseEnum(curAdr);
       Exit;
     End
     //Switch at next address
-    else if IsFlagSet(cfSwitch, curPos + len) then
+    else if IsFlagSet([cfSwitch], curPos + len) then
     Begin
       Inc(curPos, len); 
       Inc(curAdr, len);
@@ -8703,7 +8814,7 @@ var
 Begin
   InitItem(Dst);
   item := Env.Stack[Esp];
-  if (item.Flags and IF_INTVAL)=0 then
+  if not(IF_INTVAL in item.Flags) then
   begin
     Dst.Value := item.Value;
     Dst._Type := item._Type;
@@ -8781,7 +8892,7 @@ Begin
       //[Offset]
       if IsValidImageAdr(offset) then
       Begin
-        Dst.Flags := IF_INTVAL;
+        Dst.Flags := [IF_INTVAL];
         Dst.IntValue := offset;
         Exit;
       End;
@@ -8809,11 +8920,11 @@ Begin
     //[esp+N]
     if DisaInfo.BaseReg = 20 then
     Begin
-      Dst.Flags := IF_STACK_PTR;
+      Dst.Flags := [IF_STACK_PTR];
       Dst.IntValue := _ESP_ + offset;
       item := Env.Stack[_ESP_ + offset];
       //Field
-      if (item.Flags and IF_FIELD)<>0 then
+      if IF_FIELD in item.Flags then
       Begin
         foffset := item.Offset;
         Dec(offset, foffset);
@@ -8839,38 +8950,38 @@ Begin
       //[ebp+8] - set flag IF_EXTERN_VAR and exit
       if (DisaInfo.BaseReg = 21) and (offset = 8) then
       begin
-        Dst.Flags := IF_EXTERN_VAR;
+        Dst.Flags := [IF_EXTERN_VAR];
         Exit;
       end;
-      if (itemBase.Flags and IF_EXTERN_VAR)<>0 then
+      if IF_EXTERN_VAR in itemBase.Flags then
       begin
         Dst.Value := 'extlvar_' + Val2Str(-offset);
         Exit;
       end;
     End;
     //[reg-N]
-    if (itemBase.Flags and IF_STACK_PTR)<>0 then
+    if IF_STACK_PTR in itemBase.Flags then
     Begin
       //xchg ecx,[ebp-XXX] - special processing
       if Op = OP_XCHG then with Dst^ do
       Begin
-        Flags := IF_STACK_PTR;
+        Flags := [IF_STACK_PTR];
         IntValue := itemBase.IntValue + offset;
         Value := itemBase.Value;
         Name := itemBase.Name;
         Exit;
       End
-      else if (itemBase.Flags and IF_ARG)<>0 then with Dst^ do
+      else if IF_ARG in itemBase.Flags then with Dst^ do
       Begin
-        Flags := IF_STACK_PTR;
+        Flags := [IF_STACK_PTR];
         IntValue := itemBase.IntValue + offset;
         Value := itemBase.Value;
         Name := itemBase.Name;
         Exit;
       End
-      else if (itemBase.Flags and IF_ARRAY_PTR)<>0 then with Dst^ do
+      else if IF_ARRAY_PTR in itemBase.Flags then with Dst^ do
       Begin
-        Flags := IF_STACK_PTR;
+        Flags := [IF_STACK_PTR];
         IntValue := itemBase.IntValue + offset;
         if itemBase.Value <> '' then Value := itemBase.Value + '[]';
         if itemBase.Name <> '' then Name := itemBase.Name + '[]';
@@ -8878,9 +8989,9 @@ Begin
       End;
       item := Env.Stack[itemBase.IntValue + offset];
       //Arg
-      if (item.Flags and IF_ARG)<>0 then with Dst^ do
+      if IF_ARG in item.Flags then with Dst^ do
       Begin
-        Flags := IF_STACK_PTR;
+        Flags := [IF_STACK_PTR];
         IntValue := itemBase.IntValue + offset;
         //AssignItem(Dst, &_item);
         //Dst.Flags &:= ~IF_ARG;
@@ -8889,16 +9000,16 @@ Begin
         Exit;
       End
       //Var
-      else if (item.Flags and IF_VAR)<>0 then
+      else if IF_VAR in item.Flags then
       Begin
-        item.Flags := item.Flags and not IF_VAR;
+        Exclude(item.Flags, IF_VAR);
         item._Type := '^' + item._Type;
         AssignItem(Dst^, item);
         Dst.Name := Env.GetLvarName(itemBase.IntValue + offset);
         Exit;
       End
       //Field
-      else if (item.Flags and IF_FIELD)<>0 then
+      else if IF_FIELD in item.Flags then
       Begin
         foffset := item.Offset;
         Dec(offset, foffset);
@@ -8917,7 +9028,7 @@ Begin
       else if (item._Type = '') or (GetTypeKind(item._Type, size) <> ikInterface) then
       Begin
         Env.Stack[itemBase.IntValue + offset].Name := Env.GetLvarName(itemBase.IntValue + offset);
-        Dst.Flags := IF_STACK_PTR;
+        Dst.Flags := [IF_STACK_PTR];
         Dst.IntValue := itemBase.IntValue + offset;
         Dst.Value := Env.GetLvarName(itemBase.IntValue + offset);
         Dst.Name := Dst.Value;
@@ -8934,27 +9045,27 @@ Begin
     else if offset = 0 then
     Begin
       typeName := itemBase._Type;
-      if (itemBase.Flags and IF_VAR)<>0 then
+      if IF_VAR in itemBase.Flags then
       Begin
         AssignItem(Dst^, itemBase);
-        Dst.Flags := Dst.Flags and not IF_VAR;
+        Exclude(Dst.Flags, IF_VAR);
         Dst.Name := '';
         Exit;
       End
-      else if (itemBase.Flags and IF_ARRAY_PTR)<>0 then with Dst^ do
+      else if IF_ARRAY_PTR in itemBase.Flags then with Dst^ do
       Begin
         Value := itemBase.Value + '[]';
         _Type := GetArrayElementType(typeName);
         Name := '';
         Exit;
       End
-      else if (itemBase.Flags and IF_STACK_PTR)<>0 then
+      else if IF_STACK_PTR in itemBase.Flags then
       Begin
         item := Env.Stack[itemBase.IntValue];
         AssignItem(Dst^, item);
         Exit;
       End
-      else if (itemBase.Flags and IF_INTVAL)<>0 then
+      else if IF_INTVAL in itemBase.Flags then
       Begin
         adr := itemBase.IntValue;
         if IsValidImageAdr(adr) then
@@ -9034,10 +9145,10 @@ Begin
         Dst._Type := typeName;
         Exit;
       End;
-      Dst.Flags := IF_VMT_ADR;
-      if (itemBase.Flags and IF_INTERFACE)<>0 then
+      Dst.Flags := [IF_VMT_ADR];
+      if IF_INTERFACE in itemBase.Flags then
       Begin
-        Dst.Flags := Dst.Flags or IF_INTERFACE;
+        Include(Dst.Flags, IF_INTERFACE);
         Dst.Value := itemBase.Value;
       End;
       Dst.IntValue := GetClassAdr(typeName);
@@ -9055,9 +9166,9 @@ Begin
       Dst.Value := _name + '[' + GetDecompilerRegisterName(DisaInfo.BaseReg) + ']';
       Exit;
     End
-    else if (itemBase.Flags and IF_ARRAY_PTR)<>0 then
+    else if IF_ARRAY_PTR in itemBase.Flags then
     Begin
-      if ((itemBase.Flags and IF_STACK_PTR)<>0) and (Env.Stack[itemBase.IntValue].Value <> '') then
+      if (IF_STACK_PTR in itemBase.Flags) and (Env.Stack[itemBase.IntValue].Value <> '') then
         Dst.Value := Env.Stack[itemBase.IntValue].Value + '['
       else
         Dst.Value := GetDecompilerRegisterName(DisaInfo.BaseReg) + '[';
@@ -9081,7 +9192,7 @@ Begin
     End
     else if (typeName[1] = '^') then typeName := GetTypeDeref(typeName);
 
-    itemBase.Flags := 0;
+    itemBase.Flags := [];
     if itemBase.Value = '' then
       itemBase.Value := GetDecompilerRegisterName(DisaInfo.BaseReg);
     itemBase._Type := typeName;
@@ -9192,7 +9303,7 @@ Begin
         if kind = ikInterface then
         Begin
           typeName[1] := 'T';
-          Dst.Flags := IF_INTERFACE;
+          Dst.Flags := [IF_INTERFACE];
           Dst.Value := _value; 
           Dst._Type := typeName;
           Exit;
@@ -9238,7 +9349,7 @@ Begin
     GetRegItem(DisaInfo.IndxReg, itemIndx);
     if Op = OP_LEA then
     Begin
-      if (itemBase.Flags and IF_STACK_PTR)<>0 then Dst.Flags := Dst.Flags or IF_STACK_PTR;
+      if IF_STACK_PTR in itemBase.Flags then Include(Dst.Flags, IF_STACK_PTR);
       Dst.Value := GetDecompilerRegisterName(DisaInfo.BaseReg) + ' + '
         + GetDecompilerRegisterName(DisaInfo.IndxReg) + ' * ' + IntToStr(DisaInfo.Scale);
       if offset > 0 then
@@ -9257,14 +9368,14 @@ Begin
         Exit;
       End
       //ebp
-      else if (DisaInfo.BaseReg = 21) and ((itemBase.Flags and IF_STACK_PTR)<>0) then
+      else if (DisaInfo.BaseReg = 21) and (IF_STACK_PTR in itemBase.Flags) then
       Begin
         Dst.Value := Env.GetLvarName(itemBase.IntValue + offset + DisaInfo.Scale) + '[' + itemIndx.Value + ']';
         Exit;
       End;
       kind := ikUnknown;
       //Lets try analyze _itemBase if it is address
-      if (itemBase.Flags and IF_INTVAL)<>0 then
+      if IF_INTVAL in itemBase.Flags then
       Begin
         adr := itemBase.IntValue;
         if IsValidImageAdr(adr) then
@@ -9367,7 +9478,7 @@ Begin
     End
     else if kind = ikArray then
     Begin
-      if (itemBase.Flags and IF_INTVAL)<>0 then
+      if IF_INTVAL in itemBase.Flags then
       Begin
         adr := itemBase.IntValue;
         recN := GetInfoRec(adr);
@@ -9536,13 +9647,13 @@ var
 Begin
   Result:=item.Name;
   if item.Name <> '' then exit;
-  if (item.Flags and IF_STACK_PTR)<>0 then
+  if IF_STACK_PTR in item.Flags then
   Begin
     Env.Stack[item.IntValue]._Type := 'String';
     Result:= Env.GetLvarName(item.IntValue);
     Exit;
   End
-  else if (item.Flags and IF_INTVAL)<>0 then
+  else if IF_INTVAL in item.Flags then
   Begin
     adr := item.IntValue;
     if adr = 0 then
@@ -9618,7 +9729,7 @@ Begin
     de.SetStop(CmpAdr);
     try
       Env.AddToBody('begin');
-      _curAdr := de.Decompile(_begAdr, 0, loopInfo);
+      _curAdr := de.Decompile(_begAdr, [], loopInfo);
       Env.AddToBody('end');
     except 
       on E:exception do
@@ -9645,7 +9756,7 @@ Begin
     de.SetDeFlags(DeFlags);
     de.SetStop(_bodyBegAdr);
     try
-      de.Decompile(sAdr, CF_BJL, loopInfo);
+      de.Decompile(sAdr, [CF_BJL], loopInfo);
     except
       on E:exception do
       Begin
@@ -9667,7 +9778,8 @@ Begin
       de.SetStop(_bodyEndAdr);
       try
         Env.AddToBody('begin');
-        _curAdr := de.Decompile(_bodyBegAdr, 0, loopInfo);
+        _curAdr := de.Decompile(_bodyBegAdr, [], loopInfo);
+        if (_jmpAdr<>0) and IsExit(_jmpAdr) then Env.AddToBody('Exit;');
         Env.AddToBody('end');
       Except
         on E:exception do
@@ -9678,7 +9790,7 @@ Begin
       end;
       Env.RestoreContext(_bodyBegAdr); //if (_jmpAdr || de.WasRet)
       de.Free;
-      if _jmpAdr<>0 then
+      if (_jmpAdr<>0)and not IsExit(_jmpAdr) then
       Begin
         Env.AddToBody('else');
         _begAdr := _curAdr;
@@ -9689,7 +9801,7 @@ Begin
         de.SetStop(_jmpAdr);
         try
           Env.AddToBody('begin');
-          _curAdr := de.Decompile(_begAdr, CF_ELSE, loopInfo);
+          _curAdr := de.Decompile(_begAdr, [CF_ELSE], loopInfo);
           Env.AddToBody('end');
         Except
           on E:exception do
@@ -9725,7 +9837,7 @@ Begin
     de.SetStop(CmpAdr);
     try
       Env.AddToBody('begin');
-      _curAdr := de.Decompile(_begAdr, 0, loopInfo);
+      _curAdr := de.Decompile(_begAdr, [], loopInfo);
       Env.AddToBody('end');
     Except
       on E:exception do
@@ -9753,7 +9865,7 @@ Begin
     de.SetStop(CmpAdr);
     try
       Env.AddToBody('begin');
-      _curAdr := de.Decompile(_begAdr, 0, loopInfo);
+      _curAdr := de.Decompile(_begAdr, [], loopInfo);
       Env.AddToBody('end');
     Except
        on E:exception do
@@ -9773,7 +9885,7 @@ Begin
     de.SetStop(_jmpAdr);
     try
       Env.AddToBody('begin');
-      _curAdr := de.Decompile(_begAdr, CF_ELSE, loopInfo);
+      _curAdr := de.Decompile(_begAdr, [CF_ELSE], loopInfo);
       Env.AddToBody('end');
     Except
       on E:exception do

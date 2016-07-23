@@ -19,7 +19,8 @@ Type
 
   InfoProcInfo = class
   public
-	  flags:Integer;
+    call_kind:Byte;
+	  flags:TProcFlagSet;
     bpBase:WORD;    	//First argument distance from base ebp
     retBytes:WORD;
     procSize:Integer;
@@ -78,11 +79,7 @@ Type
 
 Implementation
 
-Uses SysUtils,StrUtils,Misc,Main,Def_disasm,Scanf,CodeSiteLogging;
-
-Var
-  //as some statistics for memory leaks detection (remove it when fixed)
-  stat_InfosOverride:Cardinal;
+Uses SysUtils,StrUtils,Misc,Main,Def_disasm,Scanf,Dialogs;
 
 Function FieldsCmpFunction(item1,item2:Pointer):Integer;
 Begin
@@ -254,13 +251,13 @@ end;
 Function InfoProcInfo.AddArg(_Tag:BYTE; Ofs, _Size:Integer; _Name, _TypeDef:AnsiString):PArgInfo;
 var
   F,L,M:Integer;
-  
+
   procedure NewRes;
   begin
     New(Result);
     with Result^ do
     begin
-      in_Reg:=False;
+      in_Reg:= Ofs In [0..3];
       Tag := _Tag;
       Ndx := Ofs;
       Size := _Size;
@@ -314,111 +311,103 @@ end;
 
 Function InfoProcInfo.AddArgsFromDeclaration (Decl:AnsiString; from, callKind:Integer):AnsiString;
 var
-  fColon:Boolean;
   p, pp, cp:Integer;
-  sc:Char;
-  ss, num,arg:Integer;
+  ss, arg:Integer;
+  sl,sl2:TStringList;
+  i,j:Integer;
   aInfo:ArgInfo;
-  _Name,_Type:AnsiString;
+  _Name,_Type,t,m:AnsiString;
 Begin
   Result:='';
-  aInfo.in_Reg:=False;
   p := Pos('(',Decl);
   if p<>0 then
   Begin
-    Inc(p); 
-    pp := p; 
-    num := 0; 
-    fColon := false;
-    while true do
-    Begin
-      case Decl[pp] of
-        ')': break;
-        ';': fColon := false;
-        ':': if not fColon then
-            Begin
-              Decl[pp] := ' ';
-              Inc(num);
-              fColon := true;
-            End;
-      end;
-      Inc(pp);
-    End;
-    if num<>0 then
+    Inc(p);
+    pp := PosEx(')',Decl,p); // Preserve it, used later to get the result type
+    If pp<>0 Then
     Begin
       ss := bpBase;
       arg := from;
-      while true do 
-      Begin
-        _Name := '';
-        _Type := '';
-        sc := ';'; 
-        pp := PosEx(sc,Decl,p);
-        if pp=0 then
+      sl:=Nil;
+      sl2:=Nil;
+      Try
+        sl:=TStringList.Create;
+        ExtractStrings([';'],[],@Copy(Decl,p,pp-p)[1],sl);
+        sl2:=TStringList.Create;
+        for i:=0 to sl.Count-1 do
         Begin
-          sc := ')';
-          pp := PosEx(sc,Decl,p);
-        End;
-        // pp^ := #0;
-        //Tag
-        aInfo.Tag := $21;
-        while Decl[p] = ' ' do Inc(p);
-        _Name:=Copy(Decl,p,FirstWord(Decl,p,pp));
-        if _Name='var' then
-        Begin
-          aInfo.Tag := $22;
-          Inc(p, Length(_Name));
-          while Decl[p] = ' ' do Inc(p);
-          //Name
-          _Name:=Copy(Decl,p,FirstWord(Decl,p,pp));
-        End
-        else if _Name= 'val' then
-        Begin
-          Inc(p, Length(_Name));
-          while Decl[p] = ' ' do Inc(p);
-          //Name
-          _Name:=Copy(Decl,p,FirstWord(Decl,p,pp));
-        End;
-        Inc(p, Length(_Name));
-        while Decl[p] = ' ' do Inc(p);
-        //Type
-        _Type:=Copy(Decl, p,pp-p);
-        //Inc(p, strlen(_Type));
-        //while p^ = ' ' do Inc(p);
-        aInfo.Size := 4;
-        cp := Pos(':',_Type);
-        if cp<>0 then
-        Begin
-          sscanf(PAnsiChar(_type)+cp+1,'%d',[@aInfo.Size]);
-          _Type[cp]:=' ';
-          //sscanf(cp + 1, '%d', &argInfo.Size);
-          //cp^ := #0;
-        End;
-        if callKind = 0 then //fastcall
-        Begin
-          if (arg < 3) and (aInfo.Size = 4) then aInfo.Ndx := arg
-          else
+          // check each group of arguments
+          t:=sl[i];
+          cp:=Pos(':',t);
+          if cp=0 then
           Begin
-            aInfo.Ndx := ss;
-            Inc(ss, aInfo.Size);
+            ShowMessage('Missing argument type '+IntToStr(i+1));
+            Exit;
+          end;
+          p:=PosEx('=',t,cp);
+          if p=0 then p:=Length(t);
+          _Type:=Trim(Copy(t,cp+1,p-cp));
+          sl2.Clear;
+          ExtractStrings([','],[],@Copy(t,1,cp-1)[1],sl2);
+          if sl2.Count=0 Then
+          Begin
+            ShowMessage('Missing argument name '+IntToStr(i+1));
+            Exit;
+          end;
+          for j:=0 to sl2.Count-1 do
+          begin
+            // check each argument in the group
+            t:=Trim(sl2[j]);
+            p:=Pos(' ',t);
+            if p<>0 Then
+            Begin
+              m:=Copy(t,1,p-1);
+              if SameText(m,'var')Or SameText(m,'out') then
+              Begin
+                aInfo.Tag:=$22;
+                _Name:=Trim(Copy(t,p+1,Length(t)));
+              end
+              else
+              Begin
+                ShowMessage('Unknown argument modifier '+IntToStr(i+1));
+                Exit;
+              end;
+            end
+            Else
+            Begin
+              aInfo.Tag:=$21;
+              _Name:=t;
+            End;
+            aInfo.Size := 4;
+            {cp := Pos(':',_Type);
+            if cp<>0 then
+            Begin
+              sscanf(PAnsiChar(_type)+cp+1,'%d',[@aInfo.Size]);
+              _Type[cp]:=' ';
+              //sscanf(cp + 1, '%d', &argInfo.Size);
+              //cp^ := #0;
+            End;}
+            // fastcall
+            if (callKind = 0) and (arg < 3) and (aInfo.Size = 4) then aInfo.Ndx := arg
+            else
+            Begin
+              aInfo.Ndx := ss;
+              Inc(ss, aInfo.Size);
+            End;
+            if _Name= '?' then aInfo.Name := ''
+              else aInfo.Name := Trim(_Name);
+            if _Type = '?' then aInfo.TypeDef := ''
+              else aInfo.TypeDef := TrimTypeName(_Type);
+            AddArg(@aInfo);
+            Inc(arg);
           End;
-        End
-        else
-        Begin
-          aInfo.Ndx := ss;
-          Inc(ss, aInfo.Size);
-        End;
-        if _Name= '?' then aInfo.Name := ''
-          else aInfo.Name := Trim(_Name);
-        if _Type = '?' then aInfo.TypeDef := ''
-          else aInfo.TypeDef := TrimTypeName(_Type);
-        AddArg(@aInfo);
-        Decl[pp] := ' ';
-        p := pp + 1;
-        if sc = ')' then break;
-        Inc(arg);
-      End;
-    End;
+        end;
+      Finally
+        sl.Free;
+        sl2.Free;
+      end;
+      p:=pp;
+    end;
   End
   else p := 1;
   p := PosEx(':',Decl,p);
@@ -558,7 +547,7 @@ Begin
     if Assigned(InfoList[APos]) then
     begin
       //as: if we here - memory leak then!
-      Inc(stat_InfosOverride);
+      //Inc(stat_InfosOverride);
     end;
     InfoList[APos] := Self;
   end;
@@ -592,7 +581,7 @@ Begin
   CrtSection.Enter;
   Fname := AValue;
   if (ExtractClassName(name) <> '') and (kind in [ikRefine..ikFunc]) 
-    and Assigned(procInfo) then procInfo.flags:=procInfo.flags or PF_METHOD;
+    and Assigned(procInfo) then Include(procInfo.flags, PF_METHOD);
   CrtSection.Leave; 
 end;
 
@@ -610,7 +599,6 @@ Procedure InfoRec.AddXref (_Type_:Char; _Adr:Integer; Ofs:Integer);
 var
   recX:PXRefRec;
   F,L,M:Integer;
-  s:AnsiString;
 
   Procedure NewRec;
   begin
@@ -694,8 +682,8 @@ Begin
   while fromPos >= 0 do
   begin
     Dec(fromPos);
-    if IsFlagSet(cfProcStart, fromPos) then break;
-    if IsFlagSet(cfInstruction, fromPos) then
+    if IsFlagSet([cfProcStart], fromPos) then break;
+    if IsFlagSet([cfInstruction], fromPos) then
     begin
       frmDisasm.Disassemble(Code + fromPos, Pos2Adr(fromPos), @disInfo, Nil);
       if (disInfo.Immediate = itemAdr) or (disInfo.Offset = itemAdr) then
@@ -1130,7 +1118,7 @@ Begin
       firstArg := 2;
       Dec(num, 2);
     End
-    else if (procInfo.flags and PF_ALLMETHODS)<>0 then
+    else if procInfo.flags * PF_ALLMETHODS <> [] then
     Begin
       firstArg := 1;
       Dec(num);
@@ -1166,7 +1154,7 @@ Begin
       else result:=Result + '?';
   End;
   result:=Result + ';';
-  callKind := procInfo.flags and 7;
+  callKind := procInfo.call_kind;
   case callKind of
     1: result:=result + ' cdecl;';
     2: result:=result + ' pascal;';
@@ -1196,8 +1184,8 @@ Begin
     //output registers
     //if (info.procInfo.flags and PF_OUTEAX)<>0 then result:=result + ' out';
     if procInfo.retBytes<>0 then result:=result + ' RET ' + Val2Str(procInfo.retBytes);
-    if (procInfo.flags and PF_ARGSIZEG)<>0 then result:=result + '+';
-    if (procInfo.flags and PF_ARGSIZEL)<>0 then result:=result + '-';
+    if PF_ARGSIZEG in procInfo.flags then result:=result + '+';
+    if PF_ARGSIZEL in procInfo.flags then result:=result + '-';
   End;
 end;
 
@@ -1227,9 +1215,11 @@ Begin
   if Assigned(procInfo.args) then argsNum := procInfo.args.Count
     else argsNum := 0;
   num:=argsNum;
+  firstArg:=0;
+  callKind:=0;
   if num<>0 then
   Begin
-    if (procInfo.flags and PF_ALLMETHODS)<>0 then
+    if procInfo.flags * PF_ALLMETHODS <> [] then
     Begin
       firstArg := 1;
       Dec(num);
@@ -1242,7 +1232,7 @@ Begin
     if num<>0 then
     Begin
       Result:=Result + '(';
-      callKind := procInfo.flags and 7;
+      callKind := procInfo.call_kind;
       for n := firstArg to argsNum-1 do
       Begin
         if n <> firstArg then Result:=Result + '; ';
@@ -1267,8 +1257,8 @@ Begin
   if _abstract then Result:=Result + ' abstract;'
   else
   case callKind of
-    1: Result:=Result +' cdecl;';
-    2: Result:=Result +' pascal;';
+    1: Result:=Result + ' cdecl;';
+    2: Result:=Result + ' pascal;';
     3: Result:=Result + ' stdcall;';
     4: Result:=Result + ' safecall;';
   End;
@@ -1276,7 +1266,7 @@ end;
 
 Function InfoRec.MakeMultilinePrototype (Adr:Integer; Var ArgsBytes:Integer; MethodType:AnsiString):AnsiString;
 var
-  callKind:Byte;
+  //callKind:Byte;
   n, num, argsNum, firstArg:Integer;
   aInfo:PArgInfo;
 Begin
@@ -1292,7 +1282,7 @@ Begin
     firstArg := 2;
     Dec(num, 2);
   End
-  else if (procInfo.flags and PF_ALLMETHODS)<>0 then
+  else if procInfo.flags * PF_ALLMETHODS <> [] then
   Begin
     if num=0 then
     Begin
@@ -1323,7 +1313,7 @@ Begin
     firstArg := 1;
   End;
   if num > 0 then result:=result + '('+#13;
-  callKind := procInfo.flags and 7;
+  //callKind := procInfo.call_kind;
   for n := firstArg to argsNum-1 do
   Begin
     if n <> firstArg then result:=result + ';'+#13;
@@ -1369,8 +1359,7 @@ Begin
   Begin
     kind := ikFunc;
     _type := 'HRESULT';
-    procInfo.flags := procInfo.flags and $FFFFFFF8;
-    procInfo.flags := procInfo.flags or 3; //stdcall
+    procInfo.call_kind := 3; //stdcall
     procInfo.AddArg($21, 8, 4, 'Self', '');
     procInfo.AddArg($21, 12, 4, 'IID', 'TGUID');
     procInfo.AddArg($22, 16, 4, 'Obj', 'Pointer');
@@ -1382,8 +1371,7 @@ Begin
   Begin
     kind := ikFunc;
     _type := 'Integer';
-    procInfo.flags := procInfo.flags and $FFFFFFF8;
-    procInfo.flags := procInfo.flags or 3; //stdcall
+    procInfo.call_kind := 3; //stdcall
     procInfo.AddArg($21, 8, 4, 'Self', '');
     Exit;
   End

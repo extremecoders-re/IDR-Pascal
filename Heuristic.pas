@@ -61,6 +61,11 @@ Begin
   frmDisasm.Disassemble(Pos2Adr(p), @disInfo, Nil);
   if disInfo.Branch then
   begin
+    if IsExit(disInfo.Immediate) then
+    begin
+      Result:= 0;
+      Exit;
+    end;
     if disInfo.Conditional then
     begin
       if disInfo.Immediate > Integer(CodeBase) + p then
@@ -72,7 +77,6 @@ Begin
     End
     Else
     begin
-      //if (IsExit(_disInfo.Immediate)) return 0;
       if disInfo.Immediate > Integer(CodeBase) + p then
       begin
         jmpAdr := disInfo.Immediate;
@@ -81,7 +85,7 @@ Begin
       Else
       begin
         //jmp after jmp @HandleFinally
-        if IsFlagSet(cfFinally, p) then
+        if IsFlagSet([cfFinally], p) then
         begin
           p := GetNearestUpInstruction(Adr2Pos(disInfo.Immediate));
           //push Adr
@@ -234,7 +238,7 @@ Begin
   REsult:=0;
   _pos := Adr2Pos(fromAdr);
   adr := fromAdr;
-  while IsFlagSet(cfSkip, _pos) do
+  while IsFlagSet([cfSkip], _pos) do
   begin
     instrLen := frmDisasm.Disassemble(Code + _pos, adr, @disInfo, Nil);
     Inc(adr, instrLen);
@@ -287,7 +291,7 @@ Begin
   adr := fromAdr;
   while true do
   begin
-    if not IsFlagSet(cfFinally or cfExcept, _pos) then break;
+    if not IsFlagSet([cfFinally,cfExcept], _pos) then break;
     Inc(_pos, 8);
     Inc(adr, 8);
     {_instrLen :=} frmDisasm.Disassemble(Code + _pos, adr, @disInfo, Nil);
@@ -336,7 +340,7 @@ Begin
   begin
     len := frmDisasm.Disassemble(Code + curPos, curAdr, @disInfo, Nil);
     //Switch at current address
-    if IsFlagSet(cfSwitch, curPos) then
+    if IsFlagSet([cfSwitch], curPos) then
     begin
       frmDisasm.Disassemble(Code + curPos + len, curAdr + len, @disInfo, Nil);
       if disInfo.Mnem= 'ja' then
@@ -347,7 +351,7 @@ Begin
       End;
     End;
     //Switch at next address
-    if IsFlagSet(cfSwitch, curPos + len) then
+    if IsFlagSet([cfSwitch], curPos + len) then
     begin
       len:=len + frmDisasm.Disassemble(Code + curPos + len, curAdr + len, @disInfo, Nil);
       frmDisasm.Disassemble(Code + curPos + len, curAdr + len, @disInfo, Nil);
@@ -1089,8 +1093,8 @@ Begin
           if Not (disInfo.Branch and disInfo.Conditional and (b = 'F') And
             (disInfo.Immediate = adr1)) then break;
           maxAdr := _maxAdr;
-          SetFlag(cfSkip, Adr2Pos(skipAdr1));
-          SetFlag(cfSkip, Adr2Pos(skipAdr2));
+          SetFlag([cfSkip], Adr2Pos(skipAdr1));
+          SetFlag([cfSkip], Adr2Pos(skipAdr2));
           Result:=curAdr + instrLen - fromAdr;
           Exit;
         end;
@@ -1149,8 +1153,8 @@ Begin
           adr2 := disInfo.Immediate; //@2
           if adr2 > _maxAdr then _maxAdr := adr2;
           maxAdr := _maxAdr;
-          SetFlag(cfSkip, Adr2Pos(skipAdr1));
-          SetFlag(cfSkip, Adr2Pos(skipAdr2));
+          SetFlag([cfSkip], Adr2Pos(skipAdr1));
+          SetFlag([cfSkip], Adr2Pos(skipAdr2));
           Result:=curAdr + instrLen - fromAdr;
           Exit;
         end;
@@ -1218,10 +1222,10 @@ Begin
           adr := disInfo.Immediate; //@@
           if adr > _maxAdr then _maxAdr := adr;
           maxAdr := _maxAdr;
-          SetFlag(cfSkip, Adr2Pos(skipAdr1));
-          SetFlag(cfSkip, Adr2Pos(skipAdr2));
-          SetFlag(cfSkip, Adr2Pos(skipAdr3));
-          SetFlag(cfSkip, Adr2Pos(skipAdr4));
+          SetFlag([cfSkip], Adr2Pos(skipAdr1));
+          SetFlag([cfSkip], Adr2Pos(skipAdr2));
+          SetFlag([cfSkip], Adr2Pos(skipAdr3));
+          SetFlag([cfSkip], Adr2Pos(skipAdr4));
           Result:=curAdr + instrLen - fromAdr;
           Exit;
         end;
@@ -1278,7 +1282,7 @@ Begin
       begin
         Dec(_pos);
         if _pos = fromAdr then break;
-        if IsFlagSet(cfInstruction, _pos) then
+        if IsFlagSet([cfInstruction], _pos) then
         begin
           frmDisasm.Disassemble(Pos2Adr(_pos), @disInfo, Nil);
           op := frmDisasm.GetOp(disInfo.Mnem);
@@ -1318,8 +1322,8 @@ Begin
       //jxx @2
       if not (disInfo.Branch and disInfo.Conditional) then break;
       maxAdr := _maxAdr;
-      SetFlag(cfSkip, Adr2Pos(skipAdr1));
-      SetFlag(cfSkip, Adr2Pos(skipAdr2));
+      SetFlag([cfSkip], Adr2Pos(skipAdr1));
+      SetFlag([cfSkip], Adr2Pos(skipAdr2));
       REsult:=curAdr + instrLen - fromAdr;
       Exit;
     end;
@@ -1380,7 +1384,7 @@ Begin
       begin
         Dec(_pos);
         if _pos = fromAdr then break;
-        if IsFlagSet(cfInstruction, _pos) then
+        if IsFlagSet([cfInstruction], _pos) then
         begin
           frmDisasm.Disassemble(Pos2Adr(_pos), @disInfo, Nil);
           op := frmDisasm.GetOp(disInfo.Mnem);
@@ -1450,12 +1454,12 @@ Begin
       adr2 := disInfo.Immediate;
       if adr2 > _maxAdr then _maxAdr := adr2;
       maxAdr := _maxAdr;
-      SetFlag(cfSkip, Adr2Pos(skipAdr1));
-      SetFlag(cfSkip, Adr2Pos(skipAdr2));
-      SetFlag(cfSkip, Adr2Pos(skipAdr3));
-      SetFlag(cfSkip, Adr2Pos(skipAdr4));
-      SetFlag(cfSkip, Adr2Pos(skipAdr5));
-      SetFlag(cfSkip, Adr2Pos(skipAdr6));
+      SetFlag([cfSkip], Adr2Pos(skipAdr1));
+      SetFlag([cfSkip], Adr2Pos(skipAdr2));
+      SetFlag([cfSkip], Adr2Pos(skipAdr3));
+      SetFlag([cfSkip], Adr2Pos(skipAdr4));
+      SetFlag([cfSkip], Adr2Pos(skipAdr5));
+      SetFlag([cfSkip], Adr2Pos(skipAdr6));
       Result:=curAdr + instrLen - fromAdr;
     End;
     if (m = -1) and (disInfo.Ret or disInfo.Branch) then Exit;
@@ -1731,7 +1735,7 @@ Begin
       begin
         Dec(_pos);
         if _pos = fromAdr then break;
-        if IsFlagSet(cfInstruction, _pos) then
+        if IsFlagSet([cfInstruction], _pos) then
         begin
           frmDisasm.Disassemble(Pos2Adr(_pos), @disInfo, Nil);
           op := frmDisasm.GetOp(disInfo.Mnem);
@@ -1828,7 +1832,7 @@ Begin
       begin
         Dec(_pos);
         if _pos = fromAdr then Break;
-        if IsFlagSet(cfInstruction, _pos) then
+        if IsFlagSet([cfInstruction], _pos) then
         begin
           frmDisasm.Disassemble(Pos2Adr(_pos), @disInfo, Nil);
           op := frmDisasm.GetOp(disInfo.Mnem);
